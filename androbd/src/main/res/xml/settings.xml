@@ -244,6 +244,51 @@
     </PreferenceScreen>
 
     <PreferenceScreen
+        android:icon="@android:drawable/ic_menu_send"
+        android:summary="MQTT reporting options"
+        android:title="MQTT Options">
+        
+        <CheckBoxPreference
+            android:defaultValue="false"
+            android:key="mqtt_enabled"
+            android:title="Enable MQTT"
+            android:summary="Publish OBD data to MQTT broker"
+            />
+            
+        <EditTextPreference
+            android:defaultValue="tcp://localhost:1883"
+            android:dependency="mqtt_enabled"
+            android:key="mqtt_broker"
+            android:title="MQTT Broker"
+            android:summary="Broker URL (e.g. tcp://192.168.1.10:1883)"
+            />
+            
+        <EditTextPreference
+            android:defaultValue="androbd/data"
+            android:dependency="mqtt_enabled"
+            android:key="mqtt_topic"
+            android:title="MQTT Topic"
+            android:summary="Topic to publish data to"
+            />
+            
+        <EditTextPreference
+            android:defaultValue=""
+            android:dependency="mqtt_enabled"
+            android:key="mqtt_user"
+            android:title="MQTT Username"
+            />
+            
+        <EditTextPreference
+            android:defaultValue=""
+            android:dependency="mqtt_enabled"
+            android:key="mqtt_pass"
+            android:title="MQTT Password"
+            android:inputType="textPassword"
+            />
+
+    </PreferenceScreen>
+
+    <PreferenceScreen
         android:icon="@android:drawable/ic_menu_manage"
         android:summary="@string/dev_opt_description"
         android:title="@string/development_options"
