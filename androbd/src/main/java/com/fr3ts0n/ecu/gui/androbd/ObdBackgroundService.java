@@ -112,11 +112,12 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         log.info("ObdBackgroundService onStartCommand");
-        if (currentState == ServiceState.STOPPED) {
-            startForegroundService();
-            initializeCommService();
-            connectToLatestDevice();
-        }
+        // Ensure startForeground is called immediately to prevent crash on Android 8+
+        startForegroundService();
+        
+        initializeCommService();
+        connectToLatestDevice();
+        
         // Return sticky to restart service if killed by system
         return START_STICKY;
     }
@@ -141,11 +142,37 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
     
     private void startForegroundService() {
         Notification notification = createNotification("OBD Service Running", "Monitoring vehicle data...");
-        if (Build.VERSION.SDK_INT >= 34) { // Build.VERSION_CODES.UPSIDE_DOWN_CAKE
-            startForeground(NOTIFICATION_ID, notification, 16); // ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-        } else {
-            startForeground(NOTIFICATION_ID, notification);
+        
+        try {
+            if (Build.VERSION.SDK_INT >= 34) { // Android 14
+                // On Android 14, using FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE 
+                // requires the app to have BLUETOOTH_CONNECT permission already granted.
+                boolean hasBtPermission = true;
+                if (Build.VERSION.SDK_INT >= 31) {
+                    hasBtPermission = androidx.core.content.ContextCompat.checkSelfPermission(this, android.Manifest.permission.BLUETOOTH_CONNECT) 
+                                      == android.content.pm.PackageManager.PERMISSION_GRANTED;
+                }
+                
+                if (hasBtPermission) {
+                    log.info("Starting foreground with CONNECTED_DEVICE type");
+                    startForeground(NOTIFICATION_ID, notification, 16); // ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                } else {
+                    log.warning("Bluetooth permission not granted yet, starting without specific type to avoid SecurityException");
+                    startForeground(NOTIFICATION_ID, notification);
+                }
+            } else {
+                startForeground(NOTIFICATION_ID, notification);
+            }
+        } catch (Exception e) {
+            log.log(Level.SEVERE, "Failed to start foreground service", e);
+            // Last resort fallback
+            try {
+                startForeground(NOTIFICATION_ID, notification);
+            } catch (Exception e2) {
+                log.log(Level.SEVERE, "Critical failure in startForeground", e2);
+            }
         }
+        
         currentState = ServiceState.RUNNING;
         notifyStateListeners();
     }
@@ -421,7 +448,7 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
             EcuDataPv pv = (EcuDataPv) event.getSource();
             String mnemonic = (String) pv.get(EcuDataPv.FID_MNEMONIC);
             Object value = pv.get(EcuDataPv.FIELDS[EcuDataPv.FID_VALUE]);
-            String unit = (String) pv.get(EcuDataPv.FIELDS[EcuDataPv.FID_UNITS]);
+            String unit = pv.getUnits();
             
             String payload = String.format("{\"mnemonic\":\"%s\", \"value\":\"%s\", \"unit\":\"%s\"}", 
                                           mnemonic, value, unit);

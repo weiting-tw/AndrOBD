@@ -685,6 +685,19 @@ public class MainActivity extends PluginManager
         bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE);
     }
 
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        log.info("Permissions result received, restarting service to apply permissions if needed");
+        // Permissions granted, try to restart foreground service with proper type
+        Intent serviceIntent = new Intent(this, ObdBackgroundService.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent);
+        } else {
+            startService(serviceIntent);
+        }
+    }
+
     /**
      * Handler for application start event
      */
