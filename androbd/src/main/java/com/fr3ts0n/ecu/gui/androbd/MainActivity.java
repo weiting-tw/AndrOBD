@@ -550,13 +550,23 @@ public class MainActivity extends PluginManager
         // get additional permissions
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
         {
-            // Storage Permissions
-            final int REQUEST_EXTERNAL_STORAGE = 1;
-            final String[] PERMISSIONS_STORAGE = {
-                    Manifest.permission.READ_EXTERNAL_STORAGE,
-                    Manifest.permission.WRITE_EXTERNAL_STORAGE
-            };
-            requestPermissions(PERMISSIONS_STORAGE, REQUEST_EXTERNAL_STORAGE);
+            List<String> permissions = new ArrayList<>();
+            permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE);
+            permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+            
+            if (Build.VERSION.SDK_INT >= 31) { // Build.VERSION_CODES.S
+                permissions.add("android.permission.BLUETOOTH_SCAN");
+                permissions.add("android.permission.BLUETOOTH_CONNECT");
+            } else {
+                permissions.add(Manifest.permission.ACCESS_FINE_LOCATION);
+            }
+            
+            if (Build.VERSION.SDK_INT >= 33) { // Build.VERSION_CODES.TIRAMISU
+                permissions.add("android.permission.POST_NOTIFICATIONS");
+            }
+
+            requestPermissions(permissions.toArray(new String[0]), 1);
+            
             // Workaround for FileUriExposedException in Android >= M
             StrictMode.VmPolicy.Builder builder = new StrictMode.VmPolicy.Builder();
             StrictMode.setVmPolicy(builder.build());

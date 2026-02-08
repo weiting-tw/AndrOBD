@@ -141,7 +141,11 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
     
     private void startForegroundService() {
         Notification notification = createNotification("OBD Service Running", "Monitoring vehicle data...");
-        startForeground(NOTIFICATION_ID, notification);
+        if (Build.VERSION.SDK_INT >= 34) { // Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+            startForeground(NOTIFICATION_ID, notification, 16); // ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        } else {
+            startForeground(NOTIFICATION_ID, notification);
+        }
         currentState = ServiceState.RUNNING;
         notifyStateListeners();
     }
