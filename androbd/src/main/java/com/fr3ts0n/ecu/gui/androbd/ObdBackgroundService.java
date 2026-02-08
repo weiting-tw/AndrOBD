@@ -105,7 +105,7 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
         super.onCreate();
         createNotificationChannel();
         setupMqtt();
-        ObdProt.PidPvs.addPvChangeListener(this, PvChangeEvent.PV_CHANGED);
+        ObdProt.PidPvs.addPvChangeListener(this, PvChangeEvent.PV_MODIFIED);
         log.info("ObdBackgroundService created");
     }
     
@@ -413,7 +413,7 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
 
     @Override
     public void pvChanged(PvChangeEvent event) {
-        if (event.getType() == PvChangeEvent.PV_CHANGED) {
+        if (event.getType() == PvChangeEvent.PV_MODIFIED) {
             EcuDataPv pv = (EcuDataPv) event.getSource();
             String mnemonic = (String) pv.get(EcuDataPv.FID_MNEMONIC);
             Object value = pv.get(EcuDataPv.FIELDS[EcuDataPv.FID_VALUE]);
