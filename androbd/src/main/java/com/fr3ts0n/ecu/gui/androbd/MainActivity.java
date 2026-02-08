@@ -602,6 +602,8 @@ public class MainActivity extends PluginManager
         // update all settings from preferences
         onSharedPreferenceChanged(prefs, null);
 
+        Toast.makeText(this, "AndrOBD API 34 Mode - " + getString(R.string.app_version), Toast.LENGTH_LONG).show();
+
         // set up logging system
         setupLoggers();
 
