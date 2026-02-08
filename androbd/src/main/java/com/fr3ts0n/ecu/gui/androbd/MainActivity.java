@@ -1736,18 +1736,22 @@ public class MainActivity extends PluginManager
     @SuppressLint("DefaultLocale")
     private int getPrefsInt(String key, int defaultValue)
     {
-        int result = defaultValue;
-
         try
         {
-            result = Integer.valueOf(prefs.getString(key, String.valueOf(defaultValue)));
+            // Robust check: can be Integer or String
+            Object value = prefs.getAll().get(key);
+            if (value instanceof Integer) {
+                return (Integer) value;
+            } else if (value instanceof String) {
+                return Integer.parseInt((String) value);
+            }
         } catch (Exception ex)
         {
             // log error message
-            log.severe(String.format("Preference '%s'(%d): %s", key, result, ex.toString()));
+            log.log(Level.WARNING, String.format("Preference '%s' error, using default: %d", key, defaultValue), ex);
         }
 
-        return result;
+        return defaultValue;
     }
 
     /**

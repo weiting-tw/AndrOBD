@@ -83,7 +83,14 @@ class FileHelper
 	 */
 	static String getPath(Context context)
 	{
-		// generate file name
+		// Modern Android (API 29+) prefers getExternalFilesDir to avoid Scoped Storage issues
+		if (android.os.Build.VERSION.SDK_INT >= 29) {
+			File filesDir = context.getExternalFilesDir(null);
+			if (filesDir != null) {
+				return filesDir.getAbsolutePath();
+			}
+		}
+		// Fallback for older Android
 		return Environment.getExternalStorageDirectory()
 			+ File.separator
 			+ context.getPackageName();
