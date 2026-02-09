@@ -112,12 +112,16 @@ public class SettingsActivity
 	}
 
 	@SuppressLint("ValidFragment")
-	public class PrefsFragment
+	public static class PrefsFragment
 		extends PreferenceFragment
 		implements Preference.OnPreferenceClickListener,
 		SharedPreferences.OnSharedPreferenceChangeListener
 	{
 		Vector<EcuDataItem> items;
+
+		public PrefsFragment() {
+			// Required empty public constructor
+		}
 
 		@Override
 		public void onCreate(Bundle savedInstanceState)
@@ -385,7 +389,7 @@ public class SettingsActivity
 						{
 						/* Remember persistent read permission for selected file,
 						   otherwise we will NOT be allowed to load it on startup ... ;( */
-							getContentResolver().takePersistableUriPermission(Objects.requireNonNull(data.getData()),
+							getActivity().getContentResolver().takePersistableUriPermission(Objects.requireNonNull(data.getData()),
 															                  Intent.FLAG_GRANT_READ_URI_PERMISSION);
 						}
 					}
