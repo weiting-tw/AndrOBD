@@ -42,12 +42,6 @@ import com.fr3ts0n.ecu.prot.obd.ObdProt;
 import com.fr3ts0n.pvs.PvChangeEvent;
 import com.fr3ts0n.pvs.PvChangeListener;
 
-import org.eclipse.paho.client.mqttv3.MqttClient;
-import org.eclipse.paho.client.mqttv3.MqttConnectOptions;
-import org.eclipse.paho.client.mqttv3.MqttException;
-import org.eclipse.paho.client.mqttv3.MqttMessage;
-import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -79,9 +73,6 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
     private final Handler reconnectHandler = new Handler(Looper.getMainLooper());
     private final List<ServiceStateListener> stateListeners = new ArrayList<>();
     
-    private MqttClient mqttClient;
-    private boolean mqttEnabled = false;
-    private String mqttTopic = "androbd/data";
     private boolean autoReconnect = true;
     
     // Binder for local service binding
@@ -104,7 +95,6 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
     public void onCreate() {
         super.onCreate();
         createNotificationChannel();
-        setupMqtt();
         ObdProt.PidPvs.addPvChangeListener(this, PvChangeEvent.PV_MODIFIED);
         log.info("ObdBackgroundService created");
     }
@@ -133,7 +123,6 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
         reconnectHandler.removeCallbacksAndMessages(null);
         stopCommService();
         ObdProt.PidPvs.removePvChangeListener(this);
-        stopMqtt();
         currentState = ServiceState.STOPPED;
         notifyStateListeners();
         log.info("ObdBackgroundService destroyed");
@@ -390,58 +379,6 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
         }
     }
 
-    // MQTT Logic
-    private void setupMqtt() {
-        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
-        mqttEnabled = prefs.getBoolean("mqtt_enabled", false);
-        if (!mqttEnabled) return;
-        
-        String broker = prefs.getString("mqtt_broker", "tcp://localhost:1883");
-        mqttTopic = prefs.getString("mqtt_topic", "androbd/data");
-        String user = prefs.getString("mqtt_user", "");
-        String pass = prefs.getString("mqtt_pass", "");
-        
-        new Thread(() -> {
-            try {
-                mqttClient = new MqttClient(broker, MqttClient.generateClientId(), new MemoryPersistence());
-                MqttConnectOptions options = new MqttConnectOptions();
-                if (!user.isEmpty()) {
-                    options.setUserName(user);
-                    options.setPassword(pass.toCharArray());
-                }
-                options.setAutomaticReconnect(true);
-                options.setCleanSession(true);
-                mqttClient.connect(options);
-                log.info("MQTT connected to " + broker);
-            } catch (MqttException e) {
-                log.log(Level.SEVERE, "MQTT Setup failed", e);
-            }
-        }).start();
-    }
-
-    private void stopMqtt() {
-        if (mqttClient != null) {
-            try {
-                mqttClient.disconnect();
-                mqttClient.close();
-            } catch (MqttException e) {
-                log.log(Level.WARNING, "MQTT stop failed", e);
-            }
-        }
-    }
-
-    private void publishMqtt(String data) {
-        if (mqttEnabled && mqttClient != null && mqttClient.isConnected()) {
-            try {
-                MqttMessage message = new MqttMessage(data.getBytes());
-                message.setQos(0);
-                mqttClient.publish(mqttTopic, message);
-            } catch (MqttException e) {
-                log.log(Level.WARNING, "MQTT publish failed", e);
-            }
-        }
-    }
-
     @Override
     public void pvChanged(PvChangeEvent event) {
         if (event.getType() == PvChangeEvent.PV_MODIFIED) {
@@ -452,7 +389,6 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
             
             String payload = String.format("{\"mnemonic\":\"%s\", \"value\":\"%s\", \"unit\":\"%s\"}", 
                                           mnemonic, value, unit);
-            publishMqtt(payload);
             notifyDataReceived(payload);
         }
     }
