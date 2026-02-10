@@ -27,10 +27,18 @@ jobs:
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
 
+    - name: Decode Keystore
+      run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > weiting-car.jks
+
     - name: Build Debug APK
       run: ./gradlew assembleDebug --stacktrace
+      env:
+        KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
-    - name: Upload APK Artifact
+    - name: Clean up Keystore
+      run: rm weiting-car.jks
       uses: actions/upload-artifact@v4
       with:
         name: AndrOBD-Debug-APK

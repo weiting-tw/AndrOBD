@@ -36,9 +36,9 @@ android {
     signingConfigs {
         config {
             storeFile file('../weiting-car.jks')
-            storePassword 'weiting1234'
-            keyAlias 'weiting-key'
-            keyPassword 'weiting1234'
+            storePassword System.getenv("KEYSTORE_PASSWORD") ?: "weiting1234"
+            keyAlias System.getenv("KEY_ALIAS") ?: "weiting-key"
+            keyPassword System.getenv("KEY_PASSWORD") ?: "weiting1234"
         }
     }
 
