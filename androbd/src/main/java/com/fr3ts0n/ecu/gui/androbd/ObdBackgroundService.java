@@ -389,6 +389,15 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
             
             String payload = String.format("{\"mnemonic\":\"%s\", \"value\":\"%s\", \"unit\":\"%s\"}", 
                                           mnemonic, value, unit);
+            
+            // Send system-wide broadcast for Home Assistant or other apps to consume
+            Intent broadcastIntent = new Intent("com.fr3ts0n.androbd.DATA_UPDATE");
+            broadcastIntent.putExtra("mnemonic", mnemonic);
+            broadcastIntent.putExtra("value", String.valueOf(value));
+            broadcastIntent.putExtra("unit", unit);
+            broadcastIntent.putExtra("json_payload", payload);
+            sendBroadcast(broadcastIntent);
+
             notifyDataReceived(payload);
         }
     }
