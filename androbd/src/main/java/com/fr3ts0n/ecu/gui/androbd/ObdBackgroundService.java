@@ -275,29 +275,28 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
 
     private void connectToLatestDevice() {
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
-        Set<String> restoreOptions = prefs.getStringSet("USE_LAST_SETTINGS", Collections.emptySet());
-        boolean useLast = restoreOptions.contains("LAST_DEV_ADDRESS");
+        String address = prefs.getString("LAST_DEV_ADDRESS", null);
         
-        if (!useLast) {
-            log.info("Auto-connect disabled by settings");
+        if (address == null) {
+            log.info("Auto-connect skipped: No last device address found.");
             return;
         }
 
-        String address = prefs.getString("LAST_DEV_ADDRESS", null);
-        if (address != null) {
-            log.info("Auto-connecting to last device: " + address);
-            if (CommService.medium == CommService.MEDIUM.BLUETOOTH) {
-                BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
-                if (adapter != null && adapter.isEnabled()) {
-                    BluetoothDevice device = adapter.getRemoteDevice(address);
-                    boolean secure = prefs.getBoolean("bt_secure_connection", false);
-                    connectToDevice(device, secure);
-                }
-            } else if (CommService.medium == CommService.MEDIUM.NETWORK) {
-                String host = prefs.getString("device_address", "192.168.0.10");
-                int port = getPrefsInt(prefs, "device_port", 35000);
-                connectToDevice(host + ":" + port, true);
+        log.info("Auto-connecting to last device: " + address);
+        // Add a handler to show Toast on UI thread for better debugging
+        mainHandler.post(() -> android.widget.Toast.makeText(this, "Auto-connecting to: " + address, android.widget.Toast.LENGTH_SHORT).show());
+
+        if (CommService.medium == CommService.MEDIUM.BLUETOOTH) {
+            BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+            if (adapter != null && adapter.isEnabled()) {
+                BluetoothDevice device = adapter.getRemoteDevice(address);
+                boolean secure = prefs.getBoolean("bt_secure_connection", false);
+                connectToDevice(device, secure);
             }
+        } else if (CommService.medium == CommService.MEDIUM.NETWORK) {
+            String host = prefs.getString("device_address", "192.168.0.10");
+            int port = getPrefsInt(prefs, "device_port", 35000);
+            connectToDevice(host + ":" + port, true);
         }
     }
 
