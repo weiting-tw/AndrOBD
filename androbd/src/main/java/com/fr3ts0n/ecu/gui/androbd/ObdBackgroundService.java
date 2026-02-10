@@ -106,7 +106,9 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
         startForegroundService();
         
         initializeCommService();
-        connectToLatestDevice();
+        
+        // Add a slight delay before auto-connecting to let system/BT stabilize
+        reconnectHandler.postDelayed(this::connectToLatestDevice, 3000);
         
         // Return sticky to restart service if killed by system
         return START_STICKY;
@@ -283,7 +285,17 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
         }
 
         log.info("Auto-connecting to last device: " + address);
-        // Add a handler to show Toast on UI thread for better debugging
+        
+        // Final sanity check for Bluetooth if using BT medium
+        if (CommService.medium == CommService.MEDIUM.BLUETOOTH) {
+            BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+            if (adapter == null || !adapter.isEnabled()) {
+                log.warning("Auto-connect aborted: Bluetooth is OFF.");
+                mainHandler.post(() -> android.widget.Toast.makeText(this, "BT is OFF - Auto-connect failed", android.widget.Toast.LENGTH_SHORT).show());
+                return;
+            }
+        }
+
         mainHandler.post(() -> android.widget.Toast.makeText(this, "Auto-connecting to: " + address, android.widget.Toast.LENGTH_SHORT).show());
 
         if (CommService.medium == CommService.MEDIUM.BLUETOOTH) {
