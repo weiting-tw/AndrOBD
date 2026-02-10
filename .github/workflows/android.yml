@@ -37,12 +37,15 @@ jobs:
         KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
-    - name: Clean up Keystore
-      run: rm weiting-car.jks
+    - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
       with:
         name: AndrOBD-Debug-APK
         path: androbd/build/outputs/apk/debug/*.apk
+
+    - name: Clean up Keystore
+      if: always()
+      run: rm -f weiting-car.jks
 
     - name: Release APK (on tags)
       if: startsWith(github.ref, 'refs/tags/')
