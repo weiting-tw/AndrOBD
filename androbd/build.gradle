@@ -33,8 +33,21 @@ android {
         variant.resValue "string", "app_version", variant.versionName
     }
 
+    signingConfigs {
+        config {
+            storeFile file('../weiting-car.jks')
+            storePassword 'weiting1234'
+            keyAlias 'weiting-key'
+            keyPassword 'weiting1234'
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig signingConfigs.config
+        }
         release {
+            signingConfig signingConfigs.config
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
