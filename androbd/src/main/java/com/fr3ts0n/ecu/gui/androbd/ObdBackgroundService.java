@@ -322,12 +322,17 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
     
     public void connectToDevice(Object device, boolean secure) {
         if (commService != null) {
+            // Force a stop of any existing attempts before starting a new one
+            commService.stop();
+            
             if (commService instanceof NetworkCommService && device instanceof String) {
                 String[] parts = ((String) device).split(":");
                 String host = parts[0];
                 int port = Integer.parseInt(parts[1]);
                 ((NetworkCommService) commService).connect(host, port);
             } else {
+                // Try to establish connection
+                log.info("Initiating connection attempt (Secure: " + secure + ")");
                 commService.connect(device, secure);
             }
         }
