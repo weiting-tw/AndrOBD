@@ -286,6 +286,14 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
         }
 
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        
+        // Check if user has enabled auto-connect in settings
+        boolean autoConnectEnabled = prefs.getBoolean("pref_auto_connect", true);
+        if (!autoConnectEnabled) {
+            log.info("Auto-connect: Disabled by user in settings.");
+            return;
+        }
+
         String address = prefs.getString("LAST_DEV_ADDRESS", null);
         
         if (address == null) {

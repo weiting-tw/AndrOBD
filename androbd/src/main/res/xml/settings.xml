@@ -99,6 +99,13 @@
                 />
 
             <CheckBoxPreference
+                android:defaultValue="true"
+                android:key="pref_auto_connect"
+                android:title="自動連結上一次的裝置"
+                android:summary="服務啟動時自動嘗試連線至最後成功的地址"
+                />
+
+            <CheckBoxPreference
                 android:defaultValue="false"
                 android:dependency="comm_medium"
                 android:key="bt_secure_connection"
