@@ -275,7 +275,16 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
         }
     }
 
+    private int connectAttempts = 0;
+    private static final int MAX_CONNECT_ATTEMPTS = 3;
+
     private void connectToLatestDevice() {
+        if (getConnectionState() == CommService.STATE.CONNECTED || 
+            getConnectionState() == CommService.STATE.CONNECTING) {
+            log.info("Auto-connect: Already connected or connecting.");
+            return;
+        }
+
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
         String address = prefs.getString("LAST_DEV_ADDRESS", null);
         
@@ -284,19 +293,9 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
             return;
         }
 
-        log.info("Auto-connecting to last device: " + address);
-        
-        // Final sanity check for Bluetooth if using BT medium
-        if (CommService.medium == CommService.MEDIUM.BLUETOOTH) {
-            BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
-            if (adapter == null || !adapter.isEnabled()) {
-                log.warning("Auto-connect aborted: Bluetooth is OFF.");
-                mainHandler.post(() -> android.widget.Toast.makeText(this, "BT is OFF - Auto-connect failed", android.widget.Toast.LENGTH_SHORT).show());
-                return;
-            }
-        }
-
-        mainHandler.post(() -> android.widget.Toast.makeText(this, "Auto-connecting to: " + address, android.widget.Toast.LENGTH_SHORT).show());
+        connectAttempts++;
+        log.info("Auto-connecting to " + address + " (Attempt " + connectAttempts + "/" + MAX_CONNECT_ATTEMPTS + ")");
+        mainHandler.post(() -> android.widget.Toast.makeText(this, "Auto-connect (" + connectAttempts + "/" + MAX_CONNECT_ATTEMPTS + "): " + address, android.widget.Toast.LENGTH_SHORT).show());
 
         if (CommService.medium == CommService.MEDIUM.BLUETOOTH) {
             BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
@@ -310,6 +309,15 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
             int port = getPrefsInt(prefs, "device_port", 35000);
             connectToDevice(host + ":" + port, true);
         }
+
+        // If not connected after this attempt, schedule a retry if we haven't hit the limit
+        if (connectAttempts < MAX_CONNECT_ATTEMPTS) {
+            reconnectHandler.postDelayed(() -> {
+                if (getConnectionState() != CommService.STATE.CONNECTED) {
+                    connectToLatestDevice();
+                }
+            }, 7000 * connectAttempts); // Progressive delay: 7s, 14s
+        }
     }
 
     private void scheduleReconnect() {
@@ -322,9 +330,6 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
     
     public void connectToDevice(Object device, boolean secure) {
         if (commService != null) {
-            // Force a stop of any existing attempts before starting a new one
-            commService.stop();
-            
             if (commService instanceof NetworkCommService && device instanceof String) {
                 String[] parts = ((String) device).split(":");
                 String host = parts[0];
