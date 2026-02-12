@@ -107,6 +107,14 @@
 
             <CheckBoxPreference
                 android:defaultValue="false"
+                android:dependency="pref_auto_connect"
+                android:key="pref_continuous_retry"
+                android:title="一直嘗試重新連線"
+                android:summary="若連線失敗，將無限次持續重試直到成功"
+                />
+
+            <CheckBoxPreference
+                android:defaultValue="false"
                 android:dependency="comm_medium"
                 android:key="bt_secure_connection"
                 android:summary="@string/secure_connect_description"

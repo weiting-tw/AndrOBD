@@ -294,6 +294,7 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
             return;
         }
 
+        boolean continuousRetry = prefs.getBoolean("pref_continuous_retry", false);
         String address = prefs.getString("LAST_DEV_ADDRESS", null);
         
         if (address == null) {
@@ -302,8 +303,9 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
         }
 
         connectAttempts++;
-        log.info("Auto-connecting to " + address + " (Attempt " + connectAttempts + "/" + MAX_CONNECT_ATTEMPTS + ")");
-        mainHandler.post(() -> android.widget.Toast.makeText(this, "Auto-connect (" + connectAttempts + "/" + MAX_CONNECT_ATTEMPTS + "): " + address, android.widget.Toast.LENGTH_SHORT).show());
+        String retryStatus = continuousRetry ? "(Continuous)" : "(" + connectAttempts + "/" + MAX_CONNECT_ATTEMPTS + ")";
+        log.info("Auto-connecting to " + address + " " + retryStatus);
+        mainHandler.post(() -> android.widget.Toast.makeText(this, "Auto-connect " + retryStatus + ": " + address, android.widget.Toast.LENGTH_SHORT).show());
 
         if (CommService.medium == CommService.MEDIUM.BLUETOOTH) {
             BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
@@ -318,13 +320,13 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
             connectToDevice(host + ":" + port, true);
         }
 
-        // If not connected after this attempt, schedule a retry if we haven't hit the limit
-        if (connectAttempts < MAX_CONNECT_ATTEMPTS) {
+        // Schedule retry if not connected
+        if (continuousRetry || connectAttempts < MAX_CONNECT_ATTEMPTS) {
             reconnectHandler.postDelayed(() -> {
                 if (getConnectionState() != CommService.STATE.CONNECTED) {
                     connectToLatestDevice();
                 }
-            }, 7000 * connectAttempts); // Progressive delay: 7s, 14s
+            }, 10000); // Constant 10s delay for predictability
         }
     }
 
