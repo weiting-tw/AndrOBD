@@ -249,6 +249,7 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
                     scheduleReconnect();
                 } else if (state == CommService.STATE.CONNECTED) {
                     reconnectHandler.removeCallbacksAndMessages(null);
+                    connectAttempts = 0; // Reset so future disconnects can retry
                 }
                 break;
         }
@@ -279,6 +280,8 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
     private static final int MAX_CONNECT_ATTEMPTS = 3;
 
     private void connectToLatestDevice() {
+        reconnectHandler.removeCallbacksAndMessages(null); // Prevent overlapping schedules
+
         if (getConnectionState() == CommService.STATE.CONNECTED || 
             getConnectionState() == CommService.STATE.CONNECTING) {
             log.info("Auto-connect: Already connected or connecting.");
@@ -309,11 +312,15 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
 
         if (CommService.medium == CommService.MEDIUM.BLUETOOTH) {
             BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
-            if (adapter != null && adapter.isEnabled()) {
-                BluetoothDevice device = adapter.getRemoteDevice(address);
-                boolean secure = prefs.getBoolean("bt_secure_connection", false);
-                connectToDevice(device, secure);
+            if (adapter == null || !adapter.isEnabled()) {
+                log.info("Auto-connect: BT adapter not ready, retrying in 5s...");
+                connectAttempts--; // Don't count this as a real attempt
+                reconnectHandler.postDelayed(this::connectToLatestDevice, 5000);
+                return;
             }
+            BluetoothDevice device = adapter.getRemoteDevice(address);
+            boolean secure = prefs.getBoolean("bt_secure_connection", false);
+            connectToDevice(device, secure);
         } else if (CommService.medium == CommService.MEDIUM.NETWORK) {
             String host = prefs.getString("device_address", "192.168.0.10");
             int port = getPrefsInt(prefs, "device_port", 35000);

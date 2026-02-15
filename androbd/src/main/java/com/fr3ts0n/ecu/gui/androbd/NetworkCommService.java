@@ -151,6 +151,8 @@ public class NetworkCommService
 	 */
 	public void connect(Object device, int portNum)
 	{
+		// Ensure telegram writer is registered (stop() removes it)
+		elm.addTelegramWriter(ser);
 		new ConnectThread(this, String.valueOf(device), portNum).start();
 	}
 

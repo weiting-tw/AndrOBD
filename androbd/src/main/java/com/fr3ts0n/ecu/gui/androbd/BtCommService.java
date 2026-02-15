@@ -108,6 +108,9 @@ public class BtCommService extends CommService
 	{
 		log.log(Level.FINE, "connect to: " + device);
 
+		// Ensure telegram writer is registered (stop() removes it)
+		elm.addTelegramWriter(ser);
+
 		// Cancel any thread attempting to make a connection
 		if (mState == STATE.CONNECTING)
 		{
