@@ -101,14 +101,17 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
     
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        log.info("ObdBackgroundService onStartCommand");
+        log.info("ObdBackgroundService onStartCommand (state=" + currentState + ")");
         // Ensure startForeground is called immediately to prevent crash on Android 8+
         startForegroundService();
         
-        initializeCommService();
-        
-        // Add a slight delay before auto-connecting to let system/BT stabilize
-        reconnectHandler.postDelayed(this::connectToLatestDevice, 3000);
+        // Only initialize once — START_STICKY may re-deliver onStartCommand
+        if (commService == null) {
+            initializeCommService();
+            
+            // Add a slight delay before auto-connecting to let system/BT stabilize
+            reconnectHandler.postDelayed(this::connectToLatestDevice, 3000);
+        }
         
         // Return sticky to restart service if killed by system
         return START_STICKY;
