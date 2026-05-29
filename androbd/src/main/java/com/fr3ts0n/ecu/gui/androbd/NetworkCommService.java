@@ -39,6 +39,7 @@ public class NetworkCommService
 	/** communication stream handler */
 	private final StreamHandler ser = new StreamHandler();
 	private Thread serThread;
+	private ConnectThread connectThread;
 
 	/** default constructor */
 	public NetworkCommService()
@@ -70,18 +71,44 @@ public class NetworkCommService
 	}
 
 	@Override
-	public void stop()
+	public synchronized void stop()
 	{
 		log.fine("stop");
 		elm.removeTelegramWriter(ser);
-		// close socket
+
+		// 中斷 connect thread（如果還在等 socket.connect()）
+		if (connectThread != null)
+		{
+			connectThread.interrupt();
+			connectThread = null;
+		}
+
+		// 關 socket — 會讓 ser.run() 裡的 I/O 拋例外、serThread 自然結束
 		try
 		{
-			mSocket.close();
+			if (mSocket != null)
+			{
+				mSocket.close();
+				mSocket = null;
+			}
 		} catch (Exception e)
 		{
 			log.severe(e.getMessage());
 		}
+
+		// 等 serThread 真結束、避免重連時新舊 thread 同讀同個 stream（ghost thread）
+		if (serThread != null)
+		{
+			try
+			{
+				serThread.interrupt();
+				serThread.join(2000);
+			} catch (InterruptedException ignored)
+			{
+			}
+			serThread = null;
+		}
+
 		setState(STATE.OFFLINE);
 	}
 
@@ -153,7 +180,8 @@ public class NetworkCommService
 	{
 		// Ensure telegram writer is registered (stop() removes it)
 		elm.addTelegramWriter(ser);
-		new ConnectThread(this, String.valueOf(device), portNum).start();
+		connectThread = new ConnectThread(this, String.valueOf(device), portNum);
+		connectThread.start();
 	}
 
 	@Override
