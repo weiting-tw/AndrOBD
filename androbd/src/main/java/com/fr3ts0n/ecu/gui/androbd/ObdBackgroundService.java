@@ -313,6 +313,7 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
         log.info("Auto-connecting to " + address + " " + retryStatus);
         mainHandler.post(() -> android.widget.Toast.makeText(this, "Auto-connect " + retryStatus + ": " + address, android.widget.Toast.LENGTH_SHORT).show());
 
+        // BT adapter 未就緒 → 自己排 5s retry、不走後面 try/finally 避免重複排程
         if (CommService.medium == CommService.MEDIUM.BLUETOOTH) {
             BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
             if (adapter == null || !adapter.isEnabled()) {
@@ -321,22 +322,31 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
                 reconnectHandler.postDelayed(this::connectToLatestDevice, 5000);
                 return;
             }
-            BluetoothDevice device = adapter.getRemoteDevice(address);
-            boolean secure = prefs.getBoolean("bt_secure_connection", false);
-            connectToDevice(device, secure);
-        } else if (CommService.medium == CommService.MEDIUM.NETWORK) {
-            String host = prefs.getString("device_address", "192.168.0.10");
-            int port = getPrefsInt(prefs, "device_port", 35000);
-            connectToDevice(host + ":" + port, true);
         }
 
-        // Schedule retry if not connected
-        if (continuousRetry || connectAttempts < MAX_CONNECT_ATTEMPTS) {
-            reconnectHandler.postDelayed(() -> {
-                if (getConnectionState() != CommService.STATE.CONNECTED) {
-                    connectToLatestDevice();
-                }
-            }, 10000); // Constant 10s delay for predictability
+        try {
+            if (CommService.medium == CommService.MEDIUM.BLUETOOTH) {
+                BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+                BluetoothDevice device = adapter.getRemoteDevice(address);
+                boolean secure = prefs.getBoolean("bt_secure_connection", false);
+                connectToDevice(device, secure);
+            } else if (CommService.medium == CommService.MEDIUM.NETWORK) {
+                String host = prefs.getString("device_address", "192.168.0.10");
+                int port = getPrefsInt(prefs, "device_port", 35000);
+                connectToDevice(host + ":" + port, true);
+            }
+        } catch (Exception e) {
+            // Bad MAC/host/port、adapter NPE 等同步例外 — 不能讓它打斷重排
+            log.warning("Auto-connect attempt threw (will still schedule retry): " + e.getMessage());
+        } finally {
+            // 任何結束路徑（成功送出/同步例外）都要排下一次重試、確保 self-healing
+            if (continuousRetry || connectAttempts < MAX_CONNECT_ATTEMPTS) {
+                reconnectHandler.postDelayed(() -> {
+                    if (getConnectionState() != CommService.STATE.CONNECTED) {
+                        connectToLatestDevice();
+                    }
+                }, 10000);
+            }
         }
     }
 
