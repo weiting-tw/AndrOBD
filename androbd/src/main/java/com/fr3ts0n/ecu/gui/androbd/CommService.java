@@ -62,9 +62,28 @@ public abstract class CommService
 
 	public static final ElmProt elm = new ElmProt();
 
+	/**
+	 * 目前實際建立連線的 instance（跨 MainActivity / ObdBackgroundService 共用）。
+	 * ELM327 藍牙裝置一次只接受一條連線；用這個標記避免兩個 CommService instance
+	 * 同時去連同一裝置而互相搶斷（flapping）。
+	 */
+	static volatile CommService sActiveInstance = null;
+
 	Context mContext;
 	private Handler mHandler = null;
 	STATE mState;
+
+	/**
+	 * 是否已有「其他」instance 連線中（給 background auto-connect 判斷是否該讓位）。
+	 * @param self 呼叫端自己的 instance（排除自己）
+	 * @return true 表示有別人正連著、不應該再去連
+	 */
+	static boolean isOtherInstanceConnected(CommService self)
+	{
+		CommService active = sActiveInstance;
+		return active != null && active != self
+			&& (active.mState == STATE.CONNECTED || active.mState == STATE.CONNECTING);
+	}
 
 	/**
 	 * Constructor. Prepares a new Communication session.
@@ -108,6 +127,19 @@ public abstract class CommService
 	{
 		log.log(Level.FINE, "setState() " + mState + " -> " + state);
 		mState = state;
+
+		// 維護共用的 active-instance 標記
+		if (state == STATE.CONNECTED || state == STATE.CONNECTING)
+		{
+			sActiveInstance = this;
+		}
+		else if (state == STATE.OFFLINE || state == STATE.NONE)
+		{
+			if (sActiveInstance == this)
+			{
+				sActiveInstance = null;
+			}
+		}
 
 		// Give the new state to the Handler so the UI Activity can update
 		mHandler.obtainMessage(MainActivity.MESSAGE_STATE_CHANGE, state).sendToTarget();

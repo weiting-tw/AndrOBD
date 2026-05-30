@@ -105,20 +105,16 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
         // Ensure startForeground is called immediately to prevent crash on Android 8+
         startForegroundService();
 
-        // Re-deliver 時也重置：避免 attempts 沒清掉、Continuous 關掉時永遠不重連
+        // Re-deliver 時也重置 attempts：避免被系統殺掉重啟後 attempts 沒清、Continuous 關掉時不重連
         connectAttempts = 0;
         autoReconnect = true;
 
-        // Only initialize once — START_STICKY may re-deliver onStartCommand
+        // Only initialize + auto-connect once — START_STICKY may re-deliver onStartCommand。
+        // 不在每次 onStartCommand 都主動連線：MainActivity 前景時自己管連線、
+        // background 太積極會跟它搶同一個藍牙連線造成閃斷。
+        // connectToLatestDevice 本身會檢查「是否已有其他 instance 連著」而讓位。
         if (commService == null) {
             initializeCommService();
-        }
-
-        // Schedule auto-connect regardless of init path（之前只在 commService==null 排程、
-        // 系統 re-deliver 但 service 還活時就完全不再嘗試重連）
-        if (getConnectionState() != CommService.STATE.CONNECTED
-                && getConnectionState() != CommService.STATE.CONNECTING) {
-            reconnectHandler.removeCallbacksAndMessages(null);
             reconnectHandler.postDelayed(this::connectToLatestDevice, 3000);
         }
 
@@ -294,9 +290,19 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
     private void connectToLatestDevice() {
         reconnectHandler.removeCallbacksAndMessages(null); // Prevent overlapping schedules
 
-        if (getConnectionState() == CommService.STATE.CONNECTED || 
+        if (getConnectionState() == CommService.STATE.CONNECTED ||
             getConnectionState() == CommService.STATE.CONNECTING) {
             log.info("Auto-connect: Already connected or connecting.");
+            return;
+        }
+
+        // 若 MainActivity(或其他 instance) 已經連著同一裝置、就別去搶 —
+        // ELM327 藍牙只接受一條連線、兩邊同連會互相 cancel 造成閃斷
+        if (CommService.isOtherInstanceConnected(commService)) {
+            log.info("Auto-connect: another CommService instance is connected, deferring.");
+            // 不連、不算 attempt；排一個輕量 re-check、好在對方斷線後接手
+            reconnectHandler.removeCallbacksAndMessages(null);
+            reconnectHandler.postDelayed(this::connectToLatestDevice, 15000);
             return;
         }
 
