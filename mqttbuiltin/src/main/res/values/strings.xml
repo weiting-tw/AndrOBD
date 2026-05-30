@@ -1,0 +1,45 @@
+<resources>
+    <string name="app_name" translatable="false">AndrOBD MqttPublisher</string>
+    <string name="settings">Plugin Settings</string>
+    <string name="mqtt_settings">MQTT settings</string>
+    <string name="mqtt_hostname">MQTT host name</string>
+    <string name="mqtt_hostname_sum">MQTT broker host name / IP address</string>
+    <string name="ip_port">IP port</string>
+    <string name="ip_port_sum">MQTT broker IP port number</string>
+    <string name="user_name">User name</string>
+    <string name="user_name_sum">MQTT broker login name</string>
+    <string name="password">Password</string>
+    <string name="password_sum">MQTT broker login password</string>
+    <string name="plugin_settings">Plugin settings</string>
+    <string name="update_period">Update period</string>
+    <string name="update_period_sum">Time [seconds] between MQTT updates</string>
+    <string name="heartbeat_period">Heartbeat period</string>
+    <string name="heartbeat_period_sum">If no data was published for this many seconds, force a full snapshot to signal the device is still alive (0 = disabled)</string>
+    <string name="mqtt_prefix">MQTT prefix</string>
+    <string name="mqtt_prefix_sum">Prefix of all published MQTT topics</string>
+    <string name="mqtt_retain">MQTT retain</string>
+    <string name="mqtt_retain_sum">MQTT retain flag for all published topics</string>
+    <string name="mqtt_qos">MQTT Qos</string>
+    <string name="mqtt_qos_sum">MQTT Quality of service (0-2)</string>
+    <string name="data_items">Data items</string>
+    <string name="data_items_sum">Select data items to be published to MQTT</string>
+    <string-array name="mqtt_qos">
+        <item>0</item>
+        <item>1</item>
+        <item>2</item>
+    </string-array>
+    <string name="mqtt_protocol">MQTT protocol</string>
+    <string name="mqtt_protocol_sum">Transport protocol to connect MQTT broker</string>
+    <string name="mqtt_prot_tcp" translatable="false">tcp://</string>
+    <string name="mqtt_prot_ssl" translatable="false">ssl://</string>
+    <string name="mqtt_prot_ws" translatable="false">ws://</string>
+    <string name="mqtt_prot_wss" translatable="false">wss://</string>
+    <string name="mqtt_clientid">Client ID</string>
+    <string name="mqtt_clientid_sum">Client id to be used for MQTT broker connection</string>
+    <string-array name="mqtt_prot">
+        <item>@string/mqtt_prot_tcp</item>
+        <item>@string/mqtt_prot_ssl</item>
+        <item>@string/mqtt_prot_ws</item>
+        <item>@string/mqtt_prot_wss</item>        
+    </string-array>
+</resources>

@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+                  android:icon="@android:drawable/ic_menu_manage"
+                  android:title="@string/settings">
+    <Preference
+        android:title="@string/app_name"
+        android:summary="@string/app_version" />
+
+    <PreferenceCategory
+        android:title="@string/plugin_settings">
+
+        <MultiSelectListPreference
+            android:key="data_items"
+            android:summary="@string/data_items_sum"
+            android:title="@string/data_items"/>
+
+        <EditTextPreference
+            android:defaultValue="30"
+            android:key="update_period"
+            android:numeric="integer"
+            android:summary="@string/update_period_sum"
+            android:title="@string/update_period"/>
+
+        <EditTextPreference
+            android:defaultValue="300"
+            android:key="heartbeat_period"
+            android:numeric="integer"
+            android:summary="@string/heartbeat_period_sum"
+            android:title="@string/heartbeat_period"/>
+
+        <EditTextPreference
+            android:defaultValue="AndrOBD/"
+            android:key="mqtt_prefix"
+            android:summary="@string/mqtt_prefix_sum"
+            android:title="@string/mqtt_prefix"/>
+
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        android:title="@string/mqtt_settings">
+
+        <ListPreference
+            android:defaultValue="@string/mqtt_prot_tcp"
+            android:entries="@array/mqtt_prot"
+            android:entryValues="@array/mqtt_prot"
+            android:key="mqtt_protocol"
+            android:summary="@string/mqtt_protocol_sum"
+            android:title="@string/mqtt_protocol"/>
+
+        <EditTextPreference
+            android:defaultValue="localhost"
+            android:key="mqtt_hostname"
+            android:summary="@string/mqtt_hostname_sum"
+            android:title="@string/mqtt_hostname"/>
+
+        <EditTextPreference
+            android:defaultValue="1883"
+            android:key="mqtt_port"
+            android:inputType="numberDecimal"
+            android:summary="@string/ip_port_sum"
+            android:title="@string/ip_port"/>
+
+        <EditTextPreference
+            android:defaultValue="guest"
+            android:key="mqtt_username"
+            android:summary="@string/user_name_sum"
+            android:title="@string/user_name" />
+
+        <EditTextPreference
+            android:defaultValue="guest"
+            android:key="mqtt_password"
+            android:inputType="textPassword"
+            android:summary="@string/password_sum"
+            android:title="@string/password" />
+
+        <EditTextPreference
+            android:defaultValue="@string/app_name"
+            android:key="mqtt_clientid"
+            android:summary="@string/mqtt_clientid_sum"
+            android:title="@string/mqtt_clientid" />
+
+        <ListPreference
+            android:defaultValue="0"
+            android:entries="@array/mqtt_qos"
+            android:entryValues="@array/mqtt_qos"
+            android:key="mqtt_qos"
+            android:summary="@string/mqtt_qos_sum"
+            android:title="@string/mqtt_qos"/>
+
+        <CheckBoxPreference
+            android:defaultValue="true"
+            android:key="mqtt_retain"
+            android:summary="@string/mqtt_retain_sum"
+            android:title="@string/mqtt_retain"/>
+
+    </PreferenceCategory>
+
+</PreferenceScreen>
