@@ -1,0 +1,9 @@
+# CodeRabbit configuration
+# https://docs.coderabbit.ai/guides/configure-coderabbit
+# 用繁體中文（台灣）產出審查摘要與留言
+language: "zh-TW"
+
+reviews:
+  # PR 摘要與逐行留言一律繁體中文
+  poem: false
+  review_status: true
