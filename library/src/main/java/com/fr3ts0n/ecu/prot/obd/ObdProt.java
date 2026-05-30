@@ -565,6 +565,20 @@ public class ObdProt extends ProtoHeader
                     int nrcCode = (Integer) getParamValue(ID_NR_CODE, buffer);
                     // get NRC object
                     NRC nrc = NRC.get(nrcCode);
+                    // Vehicles may send any 0x00-0xFF NRC code; the enum only lists
+                    // the standard ones. Unknown codes -> NRC.get() returns null.
+                    // Treat unknown as IGNORE so a single odd response can't NPE and
+                    // abort the whole protocol loop (which dropped the connection).
+                    if (nrc == null)
+                    {
+                        String unknownError = String.format(
+                            "(NRC:0x%02X) Unknown negative response code (SVC:0x%02X)",
+                            nrcCode, svc);
+                        log.severe(unknownError);
+                        firePropertyChange(new PropertyChangeEvent(this, PROP_NRC, null, unknownError));
+                        // unknown -> ignore, keep the loop alive
+                        return result;
+                    }
                     // create NRC error message
                     String error = nrc.toString(svc);
                     // log error
@@ -599,7 +613,8 @@ public class ObdProt extends ProtoHeader
                         case SKIP:
                         case IGNORE:
                         default:
-                            // Intentionally do noting
+                            // Intentionally do nothing, but record the reaction for diagnostics
+                            log.fine("NRC reaction: " + nrc.react);
                     }
                     // handling finished
                     return result;

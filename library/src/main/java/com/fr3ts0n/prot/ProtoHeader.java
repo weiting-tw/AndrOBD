@@ -257,8 +257,21 @@ public abstract class ProtoHeader
 	{
 		int ofs;
 		int value = 0;
+		// validate start within buffer before computing remaining length
+		if (start < 0 || start > buffer.length)
+		{
+			throw new IndexOutOfBoundsException(
+				"getParamInt start " + start + " out of range for buffer length " + buffer.length);
+		}
 		// if specified length is 0, take all the rest
 		if(len == 0) len = buffer.length - start;
+		// guard against reading past the buffer end (silent over-read)
+		if (start + len > buffer.length)
+		{
+			throw new IndexOutOfBoundsException(
+				"getParamInt range [" + start + "," + (start + len)
+					+ ") exceeds buffer length " + buffer.length);
+		}
 		for (ofs = start; ofs < start + len; ofs++)
 		{
 			value <<= 8;
