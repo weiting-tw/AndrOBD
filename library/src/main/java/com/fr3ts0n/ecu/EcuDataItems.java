@@ -25,6 +25,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.Vector;
 import java.util.logging.Logger;
 
@@ -134,6 +136,11 @@ public class EcuDataItems extends HashMap<Integer, HashMap<Integer, Vector<EcuDa
 		Conversion[] currCnvSet;
 		EcuDataItem newItm;
 		int line = 0;
+		// Collect FORMULA keys referenced by the CSV but missing from the
+		// conversions set, so we can emit ONE aggregated warning at the end
+		// instead of spamming one log line per row. Local (not a field) so
+		// repeated loadFromStream() calls don't accumulate across invocations.
+		Set<String> missingFormulas = new LinkedHashSet<>();
 		try
 		{
 			rdr = new BufferedReader(new InputStreamReader(inStr));
@@ -153,7 +160,9 @@ public class EcuDataItems extends HashMap<Integer, HashMap<Integer, Vector<EcuDa
 				currCnvSet = cnv.get(params[FLD.FORMULA.ordinal()]);
 				if (currCnvSet == null)
 				{
-					log.warning("Conversion not found: " + params[FLD.FORMULA.ordinal()] + " " + currLine); //$NON-NLS-1$ //$NON-NLS-2$
+					// collect for an aggregated warning; the PID is still built
+					// below (currCnvSet == null is tolerated, behaviour unchanged)
+					missingFormulas.add(params[FLD.FORMULA.ordinal()]);
 				}
 				// try to use MIN/MAX values from CSV
 				Float minVal = null;
@@ -199,6 +208,12 @@ public class EcuDataItems extends HashMap<Integer, HashMap<Integer, Vector<EcuDa
 		} catch (IOException e)
 		{
 			e.printStackTrace();
+		}
+		// emit a single aggregated warning for all missing FORMULA keys
+		if (!missingFormulas.isEmpty())
+		{
+			log.warning("Conversion(s) not found for " + missingFormulas.size()
+				+ " formula key(s): " + missingFormulas); //$NON-NLS-1$ //$NON-NLS-2$
 		}
 	}
 
