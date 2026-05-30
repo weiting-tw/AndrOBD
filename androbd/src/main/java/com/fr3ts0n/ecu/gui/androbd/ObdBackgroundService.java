@@ -42,6 +42,7 @@ import com.fr3ts0n.ecu.prot.obd.ObdProt;
 import com.fr3ts0n.pvs.PvChangeEvent;
 import com.fr3ts0n.pvs.PvChangeListener;
 
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -69,6 +70,13 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
     
     private ServiceState currentState = ServiceState.STOPPED;
     private CommService commService;
+
+    // Tracks the most-recently-created instance so a new instance can unregister
+    // a predecessor that was force-killed without onDestroy (its listener would
+    // otherwise leak forever in the static ObdProt.PidPvs map). WeakReference so
+    // we never keep the predecessor alive ourselves — but while it is still
+    // referenced by PidPvs it stays reachable, so we can find and remove it.
+    private static WeakReference<ObdBackgroundService> sLastInstance;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Handler reconnectHandler = new Handler(Looper.getMainLooper());
     private final List<ServiceStateListener> stateListeners = new ArrayList<>();
@@ -95,7 +103,20 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
     public void onCreate() {
         super.onCreate();
         createNotificationChannel();
+        // Clean up a predecessor instance that may have been force-killed without
+        // onDestroy and is still registered in the static PidPvs map (leak + its
+        // pvChanged would keep firing on a dead Service).
+        if (sLastInstance != null) {
+            ObdBackgroundService prev = sLastInstance.get();
+            if (prev != null && prev != this) {
+                ObdProt.PidPvs.removePvChangeListener(prev);
+                log.info("Removed stale predecessor PvChangeListener");
+            }
+        }
+        // idempotent self-register (remove-then-add) so we never double-register
+        ObdProt.PidPvs.removePvChangeListener(this);
         ObdProt.PidPvs.addPvChangeListener(this, PvChangeEvent.PV_MODIFIED);
+        sLastInstance = new WeakReference<>(this);
         log.info("ObdBackgroundService created");
     }
     
@@ -133,6 +154,9 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
         reconnectHandler.removeCallbacksAndMessages(null);
         stopCommService();
         ObdProt.PidPvs.removePvChangeListener(this);
+        if (sLastInstance != null && sLastInstance.get() == this) {
+            sLastInstance = null;
+        }
         currentState = ServiceState.STOPPED;
         notifyStateListeners();
         log.info("ObdBackgroundService destroyed");
@@ -447,24 +471,34 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
 
     @Override
     public void pvChanged(PvChangeEvent event) {
+        // If this Service has been stopped (normal onDestroy path) ignore late
+        // callbacks instead of broadcasting from a torn-down Service context.
+        if (currentState == ServiceState.STOPPED) {
+            return;
+        }
         if (event.getType() == PvChangeEvent.PV_MODIFIED) {
-            EcuDataPv pv = (EcuDataPv) event.getSource();
-            String mnemonic = (String) pv.get(EcuDataPv.FID_MNEMONIC);
-            Object value = pv.get(EcuDataPv.FIELDS[EcuDataPv.FID_VALUE]);
-            String unit = pv.getUnits();
-            
-            String payload = String.format("{\"mnemonic\":\"%s\", \"value\":\"%s\", \"unit\":\"%s\"}", 
-                                          mnemonic, value, unit);
-            
-            // Send system-wide broadcast for Home Assistant or other apps to consume
-            Intent broadcastIntent = new Intent("com.fr3ts0n.androbd.DATA_UPDATE");
-            broadcastIntent.putExtra("mnemonic", mnemonic);
-            broadcastIntent.putExtra("value", String.valueOf(value));
-            broadcastIntent.putExtra("unit", unit);
-            broadcastIntent.putExtra("json_payload", payload);
-            sendBroadcast(broadcastIntent);
+            try {
+                EcuDataPv pv = (EcuDataPv) event.getSource();
+                String mnemonic = (String) pv.get(EcuDataPv.FID_MNEMONIC);
+                Object value = pv.get(EcuDataPv.FIELDS[EcuDataPv.FID_VALUE]);
+                String unit = pv.getUnits();
 
-            notifyDataReceived(payload);
+                String payload = String.format("{\"mnemonic\":\"%s\", \"value\":\"%s\", \"unit\":\"%s\"}",
+                                              mnemonic, value, unit);
+
+                // Send system-wide broadcast for Home Assistant or other apps to consume
+                Intent broadcastIntent = new Intent("com.fr3ts0n.androbd.DATA_UPDATE");
+                broadcastIntent.putExtra("mnemonic", mnemonic);
+                broadcastIntent.putExtra("value", String.valueOf(value));
+                broadcastIntent.putExtra("unit", unit);
+                broadcastIntent.putExtra("json_payload", payload);
+                sendBroadcast(broadcastIntent);
+
+                notifyDataReceived(payload);
+            } catch (Exception e) {
+                // never let a data-update callback crash the protocol thread
+                log.warning("pvChanged failed: " + e.getMessage());
+            }
         }
     }
 }
