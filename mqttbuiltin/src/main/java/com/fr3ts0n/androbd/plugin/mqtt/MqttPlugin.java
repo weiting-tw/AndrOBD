@@ -272,6 +272,13 @@ public class MqttPlugin
 	@Override
 	public PluginInfo getPluginInfo()
 	{
+		// Report the runtime APK package, not the Java package. Bundled into the
+		// AndrOBD app the Java package (com.fr3ts0n.androbd.plugin.mqtt) differs
+		// from the APK package (com.fr3ts0n.ecu.gui.androbd); the host calls
+		// setClassName(packageName, className) to deliver CONFIGURE/IDENTIFY, so
+		// packageName MUST be the real APK package or those intents resolve to
+		// nothing (settings wouldn't open). Same value as before when standalone.
+		myInfo.packageName = getPackageName();
 		return myInfo;
 	}
 	
