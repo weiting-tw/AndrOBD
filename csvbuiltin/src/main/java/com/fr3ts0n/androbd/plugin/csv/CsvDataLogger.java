@@ -99,6 +99,9 @@ public class CsvDataLogger
     @Override
     public final PluginInfo getPluginInfo()
     {
+        // report the real APK package (bundled into AndrOBD the Java package
+        // differs from the APK package; host uses this to deliver CONFIGURE/DATA)
+        myInfo.packageName = getPackageName();
         return myInfo;
     }
 

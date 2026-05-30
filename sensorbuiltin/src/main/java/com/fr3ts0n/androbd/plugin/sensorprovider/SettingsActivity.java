@@ -10,6 +10,6 @@ public class SettingsActivity extends PreferenceActivity
     public void onCreate(Bundle savedInstanceState)
     {
         super.onCreate(savedInstanceState);
-        addPreferencesFromResource(com.fr3ts0n.androbd.plugin.R.xml.plugin_about);
+        addPreferencesFromResource(com.fr3ts0n.androbd.plugin.R.xml.settings);
     }
 }
