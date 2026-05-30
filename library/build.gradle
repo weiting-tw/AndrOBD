@@ -24,6 +24,11 @@ sourceSets {
 
 test {
     useJUnitPlatform()
+    // Run each test class in its own JVM. Several tests share mutable static
+    // state (EcuDataItem.cnvSystem, byMnemonic map, conversion factors), so
+    // without isolation one class can leak state into another and make the
+    // suite order-dependent / flaky.
+    forkEvery = 1
 }
 
 dependencies {
