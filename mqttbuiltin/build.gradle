@@ -1,0 +1,30 @@
+// Built-in MQTT publisher — was the standalone AndrOBD-Plugin/MqttPublisher app,
+// converted to a library module so its Service/Receiver merge into the AndrOBD
+// APK (no separate plugin install). Same com.fr3ts0n.androbd.plugin framework;
+// the host discovers it in-process via the IDENTIFY broadcast.
+apply plugin: 'com.android.library'
+
+android {
+    compileSdk 34
+    defaultConfig {
+        // align minSdk with the app (17) so manifest merge doesn't conflict
+        minSdkVersion 17
+        targetSdkVersion 34
+        vectorDrawables.useSupportLibrary = true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    namespace 'com.fr3ts0n.androbd.plugin.mqtt'
+    lint {
+        abortOnError false
+    }
+}
+
+dependencies {
+    implementation 'org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5'
+    implementation project(':plugin')
+}
