@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+
+        <receiver
+            android:name="com.fr3ts0n.androbd.plugin.sensorprovider.PluginReceiver"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="com.fr3ts0n.androbd.plugin.IDENTIFY" />
+                <category android:name="com.fr3ts0n.androbd.plugin.REQUEST" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name="com.fr3ts0n.androbd.plugin.sensorprovider.SensorProvider"
+            android:exported="true"
+            android:enabled="true"/>
+
+        <!-- config screen — no LAUNCHER (bundled, not a separate app icon) -->
+        <activity
+            android:name="com.fr3ts0n.androbd.plugin.sensorprovider.SettingsActivity"
+            android:exported="true"/>
+
+    </application>
+</manifest>

@@ -1,0 +1,24 @@
+// Built-in AndrOBD plugin (was standalone app). Converted to a library module
+// so its components merge into the AndrOBD APK — no separate install.
+apply plugin: 'com.android.library'
+
+android {
+    compileSdk 34
+    defaultConfig {
+        minSdkVersion 17
+        targetSdkVersion 34
+        vectorDrawables.useSupportLibrary = true
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    namespace 'com.fr3ts0n.androbd.plugin.gpsprovider'
+    lint {
+        abortOnError false
+    }
+}
+
+dependencies {
+    implementation project(':plugin')
+}

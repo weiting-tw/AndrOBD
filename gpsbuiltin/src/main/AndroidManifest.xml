@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-feature android:name="android.hardware.location.gps" android:required="false"/>
+    <uses-feature android:name="android.hardware.location.network" android:required="false"/>
+
+    <application>
+
+        <receiver
+            android:name="com.fr3ts0n.androbd.plugin.gpsprovider.PluginReceiver"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="com.fr3ts0n.androbd.plugin.IDENTIFY" />
+                <category android:name="com.fr3ts0n.androbd.plugin.REQUEST" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name="com.fr3ts0n.androbd.plugin.gpsprovider.GpsProvider"
+            android:exported="true"
+            android:enabled="true"/>
+
+        <!-- config screen — no LAUNCHER (bundled, not a separate app icon) -->
+        <activity
+            android:name="com.fr3ts0n.androbd.plugin.gpsprovider.SettingsActivity"
+            android:exported="true"/>
+
+    </application>
+</manifest>
