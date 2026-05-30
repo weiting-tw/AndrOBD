@@ -9,3 +9,5 @@
 **/*.iml
 *~
 local.properties
+# Local debug signing keystore (never commit — real key is a CI secret)
+*.jks

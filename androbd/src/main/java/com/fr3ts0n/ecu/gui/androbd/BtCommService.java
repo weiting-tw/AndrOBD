@@ -211,8 +211,16 @@ public class BtCommService extends CommService
 	@Override
 	public synchronized void write(byte[] out)
 	{
+		// worker thread is null when not CONNECTED (e.g. after stop() during an
+		// auto-reconnect); writing then would NPE. Drop the write and log instead.
+		BtWorkerThread worker = mBtWorkerThread;
+		if (worker == null)
+		{
+			log.warning("write() ignored: not connected (no worker thread)");
+			return;
+		}
 		// Perform the write un-synchronized
-		mBtWorkerThread.write(out);
+		worker.write(out);
 	}
 
 	/**
