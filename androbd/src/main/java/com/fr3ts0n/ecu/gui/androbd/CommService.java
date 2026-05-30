@@ -141,8 +141,13 @@ public abstract class CommService
 			}
 		}
 
-		// Give the new state to the Handler so the UI Activity can update
-		mHandler.obtainMessage(MainActivity.MESSAGE_STATE_CHANGE, state).sendToTarget();
+		// Give the new state to the Handler so the UI Activity can update.
+		// mHandler can be null (parameterless / handler-less construction, or
+		// after the Activity is gone) — guard to avoid NPE on background paths.
+		if (mHandler != null)
+		{
+			mHandler.obtainMessage(MainActivity.MESSAGE_STATE_CHANGE, state).sendToTarget();
+		}
 	}
 
 	/**
@@ -188,12 +193,16 @@ public abstract class CommService
 		stop();
 		// set new state offline
 		setState(STATE.OFFLINE);
-		// Send a failure message back to the Activity
-		Message msg = mHandler.obtainMessage(MainActivity.MESSAGE_TOAST);
-		Bundle bundle = new Bundle();
-		bundle.putString(MainActivity.TOAST, mContext.getString(R.string.unabletoconnect));
-		msg.setData(bundle);
-		mHandler.sendMessage(msg);
+		// Send a failure message back to the Activity (guarded: handler/context
+		// may be null on background / Activity-gone paths)
+		if (mHandler != null && mContext != null)
+		{
+			Message msg = mHandler.obtainMessage(MainActivity.MESSAGE_TOAST);
+			Bundle bundle = new Bundle();
+			bundle.putString(MainActivity.TOAST, mContext.getString(R.string.unabletoconnect));
+			msg.setData(bundle);
+			mHandler.sendMessage(msg);
+		}
 	}
 
 	/**
@@ -204,12 +213,16 @@ public abstract class CommService
 		stop();
 		// set new state offline
 		setState(STATE.OFFLINE);
-		// Send a failure message back to the Activity
-		Message msg = mHandler.obtainMessage(MainActivity.MESSAGE_TOAST);
-		Bundle bundle = new Bundle();
-		bundle.putString(MainActivity.TOAST, mContext.getString(R.string.connectionlost));
-		msg.setData(bundle);
-		mHandler.sendMessage(msg);
+		// Send a failure message back to the Activity (guarded: handler/context
+		// may be null on background / Activity-gone paths)
+		if (mHandler != null && mContext != null)
+		{
+			Message msg = mHandler.obtainMessage(MainActivity.MESSAGE_TOAST);
+			Bundle bundle = new Bundle();
+			bundle.putString(MainActivity.TOAST, mContext.getString(R.string.connectionlost));
+			msg.setData(bundle);
+			mHandler.sendMessage(msg);
+		}
 	}
 
 	/**
@@ -218,13 +231,17 @@ public abstract class CommService
 	void connectionEstablished(String deviceName)
 	{
 		// Send the name of the connectionEstablished device back to the UI Activity
-		Message msg = mHandler.obtainMessage(MainActivity.MESSAGE_DEVICE_NAME);
-		Bundle bundle = new Bundle();
-		bundle.putString(MainActivity.DEVICE_NAME, deviceName);
-		msg.setData(bundle);
-		mHandler.sendMessage(msg);
+		// (guarded: handler may be null on background / Activity-gone paths)
+		if (mHandler != null)
+		{
+			Message msg = mHandler.obtainMessage(MainActivity.MESSAGE_DEVICE_NAME);
+			Bundle bundle = new Bundle();
+			bundle.putString(MainActivity.DEVICE_NAME, deviceName);
+			msg.setData(bundle);
+			mHandler.sendMessage(msg);
+		}
 
-		// set state to connected
+		// set state to connected (also updates the shared active-instance marker)
 		setState(STATE.CONNECTED);
 	}
 }
