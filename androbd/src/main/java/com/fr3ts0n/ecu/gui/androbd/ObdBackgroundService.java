@@ -77,6 +77,11 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
     // we never keep the predecessor alive ourselves — but while it is still
     // referenced by PidPvs it stays reachable, so we can find and remove it.
     private static WeakReference<ObdBackgroundService> sLastInstance;
+
+    // Held as a field (NOT an inline lambda): SharedPreferences keeps listeners
+    // in a WeakHashMap, so an anonymous listener would be garbage-collected and
+    // silently stop firing.
+    private SharedPreferences.OnSharedPreferenceChangeListener prefListener;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Handler reconnectHandler = new Handler(Looper.getMainLooper());
     private final List<ServiceStateListener> stateListeners = new ArrayList<>();
@@ -117,7 +122,41 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
         ObdProt.PidPvs.removePvChangeListener(this);
         ObdProt.PidPvs.addPvChangeListener(this, PvChangeEvent.PV_MODIFIED);
         sLastInstance = new WeakReference<>(this);
+
+        // React to auto-connect settings being toggled while the Service runs in
+        // the background (previously the values were only read at connect time,
+        // so turning auto-connect off didn't stop an in-flight reconnect loop).
+        prefListener = (sharedPreferences, key) -> {
+            if (key == null
+                    || "pref_auto_connect".equals(key)
+                    || "pref_continuous_retry".equals(key)) {
+                handleConnectPrefsChanged(sharedPreferences);
+            }
+        };
+        PreferenceManager.getDefaultSharedPreferences(this)
+                .registerOnSharedPreferenceChangeListener(prefListener);
+
         log.info("ObdBackgroundService created");
+    }
+
+    /**
+     * Apply a live change to the auto-connect preferences. Turning auto-connect
+     * off stops any pending reconnect immediately; turning it back on re-arms so
+     * the next disconnect reconnects again.
+     */
+    private void handleConnectPrefsChanged(SharedPreferences prefs) {
+        boolean autoConnectEnabled = prefs.getBoolean("pref_auto_connect", true);
+        if (!autoConnectEnabled) {
+            log.info("Auto-connect disabled in settings: cancelling pending reconnect");
+            autoReconnect = false;
+            connectAttempts = 0;
+            // NOTE: when the reconnect-dedup PR lands, route this through its
+            // cancelScheduledRetry()/flag reset instead of clearing the handler.
+            reconnectHandler.removeCallbacksAndMessages(null);
+        } else if (!autoReconnect) {
+            log.info("Auto-connect re-enabled in settings");
+            autoReconnect = true;
+        }
     }
     
     @Override
@@ -152,6 +191,11 @@ public class ObdBackgroundService extends Service implements PvChangeListener {
     public void onDestroy() {
         autoReconnect = false;
         reconnectHandler.removeCallbacksAndMessages(null);
+        if (prefListener != null) {
+            PreferenceManager.getDefaultSharedPreferences(this)
+                    .unregisterOnSharedPreferenceChangeListener(prefListener);
+            prefListener = null;
+        }
         stopCommService();
         ObdProt.PidPvs.removePvChangeListener(this);
         if (sLastInstance != null && sLastInstance.get() == this) {
