@@ -269,9 +269,13 @@ public class EcuDataItem
 			}
 			else
 			{
-				// get number of padding \0 characters
-				int padChars = 0; while(buffer[ofs + padChars] == 0) padChars++;
+				// get number of padding \0 characters (bounded — an all-zero or
+				// short buffer must not run the loop past the buffer end)
+				int padChars = 0;
+				while (ofs + padChars < buffer.length && buffer[ofs + padChars] == 0) padChars++;
 				// copy string content after padding characters ...
+				// (out-of-range start/length still throws -> caught below -> "n/a",
+				//  preserving the previous behaviour for malformed buffers)
 				result = String.copyValueOf(buffer, ofs + padChars, bytes);
 			}
             // decrement error counter
