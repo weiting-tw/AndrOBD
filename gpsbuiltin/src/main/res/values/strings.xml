@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name" translatable="false">AndrOBD GpsProvider</string>
+    <string name="GPS_LATITUDE">GPS Latitude</string>
+    <string name="GPS_LONGITUDE">GPS Longitude</string>
+    <string name="GPS_ALTITUDE">GPS Altitude</string>
+    <string name="GPS_BEARING">GPS Bearing</string>
+    <string name="GPS_SPEED">GPS Speed</string>
+    <string name="DEGREES" translatable="false">°</string>
+</resources>
