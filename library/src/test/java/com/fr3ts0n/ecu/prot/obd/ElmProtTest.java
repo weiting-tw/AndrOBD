@@ -7,6 +7,7 @@ import com.fr3ts0n.pvs.PvChangeListener;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class ElmProtTest
 	implements PvChangeListener
@@ -255,5 +256,95 @@ class ElmProtTest
 		assertEquals(true, ObdProt.tCodes.containsKey(0x0123));
 		assertEquals(true, ObdProt.tCodes.containsKey(0x0456));
 		assertEquals(true, ObdProt.tCodes.containsKey(0x0789));
+	}
+
+	@Test
+	/**
+	 * Read PID support telegram with ISO header
+	 * Independent of current service in ECU detection mode
+	 * - ISO ECU address shall be detected
+	 * - DATA (Mode 1) PID's shall be detected
+	 * @Verifies AndrOBD #348
+	 */
+	void handleTgmReadObdData_ISO_Header()
+	{
+		prot.setStatus(ElmProt.STAT.ECU_DETECT);
+		// OBD data pid list with ISO header bytes
+		prot.handleTelegram("86F1104100BE3EB8118D".toCharArray());
+		prot.setStatus(ElmProt.STAT.ECU_DETECTED);
+
+		// ensure address 0x10 detected
+		assertEquals(0x10, prot.ecuAddresses.first());
+
+		// ensure, trailing padding bytes are detected and cut off
+		// BE3EB811 -> PID's 1,5,12,13,14 ... set
+		assertEquals(1, prot.getNextSupportedPid());
+		assertEquals(3, prot.getNextSupportedPid());
+		assertEquals(4, prot.getNextSupportedPid());
+		assertEquals(5, prot.getNextSupportedPid());
+		assertEquals(6, prot.getNextSupportedPid());
+		assertEquals(7, prot.getNextSupportedPid());
+		assertEquals(11, prot.getNextSupportedPid());
+		assertEquals(12, prot.getNextSupportedPid());
+		assertEquals(13, prot.getNextSupportedPid());
+		assertEquals(14, prot.getNextSupportedPid());
+		assertEquals(15, prot.getNextSupportedPid());
+		assertEquals(17, prot.getNextSupportedPid());
+		assertEquals(19, prot.getNextSupportedPid());
+		assertEquals(20, prot.getNextSupportedPid());
+		assertEquals(21, prot.getNextSupportedPid());
+		assertEquals(28, prot.getNextSupportedPid());
+	}
+
+	@Test
+	/**
+	 * Same ISO-header telegram as handleTgmReadObdData_ISO_Header(), but with a
+	 * header type byte (0x79) whose correct checksum (0x80) exposes the old
+	 * isValidIsoTelegram()/fromHex() bug: BigInteger(str,16).toByteArray() drops
+	 * or adds a leading byte depending on the first hex pair's high bit, and the
+	 * checksum comparison never masked to unsigned - together these silently
+	 * rejected ~25% of otherwise-valid ISO telegrams as bad checksums (verified
+	 * by sweeping all 256 header-type values), so the header was never stripped
+	 * and PID decoding broke.
+	 * @Verifies AndrOBD #348
+	 */
+	void handleTgmReadObdData_ISO_Header_HighBitType()
+	{
+		prot.setService(ObdProt.OBD_SVC_DATA);
+		// same payload as handleTgmReadObdData_ISO_Header(), different header type/checksum
+		prot.handleTelegram("79F1104100BE3EB81180".toCharArray());
+		assertEquals(1, prot.getNextSupportedPid());
+		assertEquals(3, prot.getNextSupportedPid());
+		assertEquals(4, prot.getNextSupportedPid());
+		assertEquals(5, prot.getNextSupportedPid());
+		assertEquals(6, prot.getNextSupportedPid());
+		assertEquals(7, prot.getNextSupportedPid());
+		assertEquals(11, prot.getNextSupportedPid());
+		assertEquals(12, prot.getNextSupportedPid());
+		assertEquals(13, prot.getNextSupportedPid());
+		assertEquals(14, prot.getNextSupportedPid());
+		assertEquals(15, prot.getNextSupportedPid());
+		assertEquals(17, prot.getNextSupportedPid());
+		assertEquals(19, prot.getNextSupportedPid());
+		assertEquals(20, prot.getNextSupportedPid());
+		assertEquals(21, prot.getNextSupportedPid());
+		assertEquals(28, prot.getNextSupportedPid());
+	}
+
+	@Test
+	/**
+	 * Handle NRC response in ECU detection
+	 * Independent of current service in ECU detection mode
+	 * - CAN ECU address shall be detected
+	 * @Verifies AndrOBD-Plugin #10
+	 */
+	void handleTgm_EcuDetect_NRC_CAN() {
+		prot.setStatus(ElmProt.STAT.ECU_DETECT);
+		// test case for issue AndrOBD-Plugin/#10 (NRC22 on detect)
+		prot.handleTelegram("7E8037F0122".toCharArray());
+		prot.setStatus(ElmProt.STAT.ECU_DETECTED);
+
+		// ensure CAN address 0x7E8 detected
+		assertEquals(0x7E8, prot.ecuAddresses.first());
 	}
 }
