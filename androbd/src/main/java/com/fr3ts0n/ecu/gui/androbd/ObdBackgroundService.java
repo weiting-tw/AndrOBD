@@ -192,6 +192,13 @@ public class ObdBackgroundService extends Service
 
 	/** true while a (re)connect is scheduled — avoids stacking retries */
 	private boolean connectPending = false;
+	/** ECU RX filter set for this connection (0 = none) */
+	private int ecuFilter = 0;
+	/** time ECU detection finished (0 = not yet) */
+	private long ecuDetectedMs = 0L;
+	/** OBD data items were reported by the vehicle since ECU detection */
+	private volatile boolean dataItemsSeen = false;
+
 	private final Runnable connectRunnable = () -> {
 		connectPending = false;
 		connect();
@@ -249,6 +256,8 @@ public class ObdBackgroundService extends Service
 		public void pvChanged(PvChangeEvent event)
 		{
 			if ((event.getType() & PvChangeEvent.PV_ADDED) == 0) return;
+			dataItemsSeen = true;
+			sLastDataMs = System.currentTimeMillis();
 			Object value = event.getValue();
 			if (value instanceof Object[])
 			{
@@ -556,6 +565,9 @@ public class ObdBackgroundService extends Service
 				connectPending = false;
 				retryCount = 0;
 				sLastDataMs = System.currentTimeMillis(); // grace period for the watchdog
+				ecuFilter = 0;
+				ecuDetectedMs = 0;
+				dataItemsSeen = false;
 				setMessage("已連線，初始化 ELM…");
 				// reset + init the ELM adapter → ECU detection → (elmListener) start data polling
 				CommService.elm.reset();
@@ -642,6 +654,8 @@ public class ObdBackgroundService extends Service
 
 			if (status == ElmProt.STAT.ECU_DETECTED)
 			{
+				ecuDetectedMs = System.currentTimeMillis();
+				dataItemsSeen = false;
 				// THE missing step: start reading live data (service 01) right away,
 				// no UI needed. Includes odometer / distance PIDs if the car supports them.
 				if (CommService.elm.getService() != ObdProt.OBD_SVC_DATA)
@@ -666,12 +680,26 @@ public class ObdBackgroundService extends Service
 	 */
 	private void selectEcu(Set<Integer> addresses)
 	{
-		if (addresses == null || addresses.size() <= 1) return;
+		ecuFilter = 0;
+		StringBuilder list = new StringBuilder();
+		for (Integer a : addresses) list.append(String.format(" 0x%X", a));
+		logEvent("偵測到 " + addresses.size() + " 個 ECU:" + list);
+		if (addresses.isEmpty())
+		{
+			logEvent("車輛沒有回應 — 請確認引擎已發動 / 電門 ON");
+			return;
+		}
+		if (addresses.size() <= 1) return;
+		// Only filter on an ECU the user explicitly picked earlier. Without a filter
+		// all ECUs answer (functional addressing), which always works; a wrong filter
+		// would block every response ("NO DATA" forever).
 		int preferred = prefs.getInt(PREF_ECU_ADDRESS, 0);
-		int address = addresses.contains(preferred) ? preferred : Collections.min(addresses);
-		log.info(String.format("ECUs %s → using 0x%X", addresses, address));
-		logEvent(String.format("多個 ECU %s → 使用 0x%X", addresses, address));
-		CommService.elm.setEcuAddress(address);
+		if (preferred != 0 && addresses.contains(preferred))
+		{
+			ecuFilter = preferred;
+			logEvent(String.format("使用先前選擇的 ECU 0x%X", preferred));
+			CommService.elm.setEcuAddress(preferred);
+		}
 	}
 
 	/** Snapshot of current OBD values for MQTT (called on the MQTT thread) */
@@ -743,6 +771,16 @@ public class ObdBackgroundService extends Service
 		{
 			log.warning("Connect timeout → abort and retry");
 			logEvent("連線逾時 → 中斷並重試");
+			commService.stop(); // → OFFLINE → retry
+		}
+		else if (state == CommService.STATE.CONNECTED && ecuFilter != 0 && ecuDetectedMs > 0
+			&& !dataItemsSeen && now - ecuDetectedMs > 30000)
+		{
+			// the remembered ECU filter blocks all answers → forget it, reconnect unfiltered
+			logEvent(String.format("ECU 0x%X 沒有回應資料 → 取消 ECU 篩選並重新連線", ecuFilter));
+			prefs.edit().remove(PREF_ECU_ADDRESS).apply();
+			ecuFilter = 0;
+			ecuDetectedMs = 0;
 			commService.stop(); // → OFFLINE → retry
 		}
 		else if (state == CommService.STATE.CONNECTED && now - sLastDataMs > DATA_TIMEOUT)
