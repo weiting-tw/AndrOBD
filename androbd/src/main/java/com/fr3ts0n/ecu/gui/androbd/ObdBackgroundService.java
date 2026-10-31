@@ -340,7 +340,12 @@ public class ObdBackgroundService extends Service
 		CommService.STATE state = commService.getState();
 		if (state == CommService.STATE.CONNECTED)
 		{
-			if (System.currentTimeMillis() - sLastDataMs > 20000)
+			long now = System.currentTimeMillis();
+			// Our own socket connect also triggers ACL_CONNECTED, and the worker thread
+			// reports CONNECTED before the data timestamp is refreshed on this thread.
+			// Never drop a link we opened less than a minute ago (ELM init + ECU
+			// detection take a while) — v20 killed fresh connections this way.
+			if (now - connectStartMs > 60000 && now - sLastDataMs > 20000)
 			{
 				logEvent(reason + " → 連線沒有資料，重新連線");
 				commService.stop(); // → OFFLINE → retry
@@ -891,7 +896,8 @@ public class ObdBackgroundService extends Service
 			ecuDetectedMs = 0;
 			commService.stop(); // → OFFLINE → retry
 		}
-		else if (state == CommService.STATE.CONNECTED && now - sLastDataMs > DATA_TIMEOUT)
+		else if (state == CommService.STATE.CONNECTED && now - sLastDataMs > DATA_TIMEOUT
+			&& now - connectStartMs > DATA_TIMEOUT)
 		{
 			log.warning("No OBD data for " + (now - sLastDataMs) / 1000 + "s → reconnect");
 			setMessage("長時間沒有資料，重新連線…");
