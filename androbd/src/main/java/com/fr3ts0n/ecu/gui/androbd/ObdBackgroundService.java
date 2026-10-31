@@ -657,7 +657,11 @@ public class ObdBackgroundService extends Service
 				dataItemsSeen = false;
 				setMessage("已連線，初始化 ELM…");
 				// reset + init the ELM adapter → ECU detection → (elmListener) start data polling
+				elmResponded = false;
+				elmResetAttempts = 0;
 				CommService.elm.reset();
+				handler.removeCallbacks(elmInitWatchdog);
+				handler.postDelayed(elmInitWatchdog, ELM_INIT_TIMEOUT);
 				break;
 
 			case CONNECTING:
@@ -737,6 +741,8 @@ public class ObdBackgroundService extends Service
 			ElmProt.STAT status = (ElmProt.STAT) evt.getNewValue();
 			sElmStatus = status;
 			logEvent("ELM 狀態 → " + status);
+			elmResponded = true;
+			handler.removeCallbacks(elmInitWatchdog);
 			if (sConnState != CommService.STATE.CONNECTED) return;
 
 			if (status == ElmProt.STAT.ECU_DETECTED)
@@ -761,6 +767,34 @@ public class ObdBackgroundService extends Service
 	}
 
 	private static final long DATA_START_FALLBACK_DELAY = 5000;
+
+	/** ELM must react to the reset within this time */
+	private static final long ELM_INIT_TIMEOUT = 5000;
+	private static final int MAX_ELM_RESETS = 2;
+	/** ELM sent any status change since the connection was established */
+	private volatile boolean elmResponded = false;
+	private int elmResetAttempts = 0;
+
+	/**
+	 * Right after the BT link comes up some adapters (e.g. V-Link) swallow the first
+	 * reset; ElmProt then waits forever for an answer. Re-send the reset, and if the
+	 * adapter still doesn't answer, drop the link and reconnect.
+	 */
+	private final Runnable elmInitWatchdog = () -> {
+		if (stopping || sConnState != CommService.STATE.CONNECTED || elmResponded) return;
+		if (elmResetAttempts < MAX_ELM_RESETS)
+		{
+			elmResetAttempts++;
+			logEvent("ELM 沒有回應 → 重送重置（第 " + elmResetAttempts + " 次）");
+			CommService.elm.reset();
+			handler.postDelayed(this.elmInitWatchdog, ELM_INIT_TIMEOUT);
+		}
+		else if (commService != null)
+		{
+			logEvent("ELM 仍沒有回應 → 重新連線");
+			commService.stop(); // → OFFLINE → retry
+		}
+	};
 
 	private final Runnable dataStartFallback = () -> {
 		if (stopping || sConnState != CommService.STATE.CONNECTED) return;
