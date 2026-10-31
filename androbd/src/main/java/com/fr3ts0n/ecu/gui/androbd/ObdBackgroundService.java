@@ -521,8 +521,14 @@ public class ObdBackgroundService extends Service
 			String address = prefs.getString(PREF_DEVICE_ADDRESS, null);
 			if (address == null || !BluetoothAdapter.checkBluetoothAddress(address))
 			{
-				setMessage("尚未選擇 OBD 裝置");
-				return;
+				// nothing selected yet → try to find the OBD adapter among paired devices
+				address = autoSelectDevice(this);
+				if (address == null)
+				{
+					setMessage("找不到已配對的 OBD 裝置，請先在系統藍牙配對，或按「選擇 OBD 藍牙裝置」");
+					scheduleConnect(RETRY_DELAYS[RETRY_DELAYS.length - 1]); // maybe it gets paired later
+					return;
+				}
 			}
 			BluetoothDevice device = adapter.getRemoteDevice(address);
 			String name = prefs.getString(PREF_DEVICE_NAME, address);
@@ -571,6 +577,50 @@ public class ObdBackgroundService extends Service
 				}
 				break;
 		}
+	}
+
+	/** Name fragments of common ELM327 / OBD adapters (upper case) */
+	private static final String[] OBD_NAME_HINTS = {
+		"OBD", "ELM", "V-LINK", "VLINK", "VGATE", "ICAR", "VEEPEAK", "KONNWEI",
+		"KW9", "CARISTA"
+	};
+
+	/**
+	 * Find the OBD adapter among the paired Bluetooth devices by name and remember it.
+	 * @return address of the selected device, or null if none looks like an OBD adapter
+	 */
+	@android.annotation.SuppressLint("MissingPermission")
+	static String autoSelectDevice(Context context)
+	{
+		try
+		{
+			BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+			if (adapter == null || !adapter.isEnabled()) return null;
+			if (Build.VERSION.SDK_INT >= 31
+				&& ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT)
+				!= PackageManager.PERMISSION_GRANTED) return null;
+			for (String hint : OBD_NAME_HINTS) // ordered by how specific the hint is
+			{
+				for (BluetoothDevice device : adapter.getBondedDevices())
+				{
+					String name = device.getName();
+					if (name != null && name.toUpperCase(java.util.Locale.ROOT).contains(hint))
+					{
+						PreferenceManager.getDefaultSharedPreferences(context).edit()
+							.putString(PREF_DEVICE_ADDRESS, device.getAddress())
+							.putString(PREF_DEVICE_NAME, name)
+							.apply();
+						logEvent("自動選擇 OBD 裝置：" + name + " (" + device.getAddress() + ")");
+						return device.getAddress();
+					}
+				}
+			}
+		}
+		catch (Exception e)
+		{
+			log.log(Level.WARNING, "auto select device failed", e);
+		}
+		return null;
 	}
 
 	/* ======================= ELM / OBD ======================= */

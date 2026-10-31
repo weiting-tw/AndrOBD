@@ -182,8 +182,11 @@ public class MainActivity extends Activity
 			}
 			catch (Exception ignored) { }
 		}
-		if (isBluetoothMedium() && prefs.getString(ObdBackgroundService.PREF_DEVICE_ADDRESS, null) == null)
+		if (isBluetoothMedium()
+			&& prefs.getString(ObdBackgroundService.PREF_DEVICE_ADDRESS, null) == null
+			&& ObdBackgroundService.autoSelectDevice(this) == null)
 		{
+			// no paired device looks like an OBD adapter → let the user pick (only once)
 			selectDevice();
 		}
 		// (re)start the background service — this is what keeps everything running

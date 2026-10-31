@@ -8,8 +8,8 @@ android {
         minSdkVersion 17
         //noinspection ExpiredTargetSdkVersion
         targetSdkVersion 34
-        versionCode 20627
-        versionName 'V2.6.16-API34-v16-simple'
+        versionCode 20628
+        versionName 'V2.6.16-API34-v17-simple'
 
         testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
 
