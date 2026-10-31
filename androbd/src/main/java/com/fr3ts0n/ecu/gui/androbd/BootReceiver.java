@@ -27,6 +27,8 @@ public class BootReceiver extends BroadcastReceiver
 			return;
 		}
 		SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
+		ObdBackgroundService.initEventLog(context);
+		ObdBackgroundService.logEvent("收到系統事件 " + action.substring(action.lastIndexOf('.') + 1));
 		boolean enabled = prefs.getBoolean(ObdBackgroundService.PREF_SERVICE_ENABLED, true);
 		boolean configured = prefs.getString(ObdBackgroundService.PREF_DEVICE_ADDRESS, null) != null
 			|| String.valueOf(CommService.MEDIUM.NETWORK.ordinal())
@@ -35,6 +37,12 @@ public class BootReceiver extends BroadcastReceiver
 		{
 			log.info(action + " → starting ObdBackgroundService");
 			ObdBackgroundService.start(context, ObdBackgroundService.ACTION_START);
+		}
+		else
+		{
+			ObdBackgroundService.logEvent(!enabled
+				? "服務先前被手動停止 → 不自動啟動（按「立即連線」恢復）"
+				: "尚未設定 OBD 裝置 → 不自動啟動");
 		}
 	}
 }

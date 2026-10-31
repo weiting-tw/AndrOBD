@@ -86,6 +86,7 @@ public class MainActivity extends Activity
 		setContentView(R.layout.activity_main);
 		setTitle(getString(R.string.app_name) + " " + getString(R.string.app_version));
 		prefs = PreferenceManager.getDefaultSharedPreferences(this);
+		ObdBackgroundService.initEventLog(this);
 
 		statusTitle = findViewById(R.id.status_title);
 		statusDetails = findViewById(R.id.status_details);

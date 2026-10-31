@@ -115,7 +115,7 @@ public class ObdBackgroundService extends Service
 	/** A connect attempt that did not finish within this time is aborted */
 	private static final long CONNECT_TIMEOUT = 30000;
 	/** Connected, but no OBD data for this long → drop the link and reconnect */
-	private static final long DATA_TIMEOUT = 180000;
+	private static final long DATA_TIMEOUT = 60000;
 	private static final long WATCHDOG_PERIOD = 15000;
 	/** Data older than this is not published (prevents re-sending stale values) */
 	private static final long DATA_FRESHNESS = 120000;
@@ -132,14 +132,42 @@ public class ObdBackgroundService extends Service
 	private static final java.util.LinkedList<String> sEvents = new java.util.LinkedList<>();
 	private static final int MAX_EVENTS = 40;
 
+	private static final String PREF_EVENT_LOG = "event_log";
+	/** app context to persist the event log (survives process restarts / reboots) */
+	private static volatile Context sAppContext;
+	private static boolean sEventsLoaded = false;
+
+	static void initEventLog(Context context)
+	{
+		sAppContext = context.getApplicationContext();
+		synchronized (sEvents)
+		{
+			if (sEventsLoaded) return;
+			sEventsLoaded = true;
+			String saved = PreferenceManager.getDefaultSharedPreferences(sAppContext)
+				.getString(PREF_EVENT_LOG, "");
+			List<String> previous = new ArrayList<>();
+			for (String line : saved.split("\n")) if (!line.isEmpty()) previous.add(line);
+			sEvents.addAll(0, previous);
+			while (sEvents.size() > MAX_EVENTS) sEvents.removeFirst();
+		}
+	}
+
 	static void logEvent(String text)
 	{
-		String line = android.text.format.DateFormat.format("HH:mm:ss", System.currentTimeMillis()) + "  " + text;
+		String line = android.text.format.DateFormat.format("MM-dd HH:mm:ss", System.currentTimeMillis()) + "  " + text;
+		String joined;
 		synchronized (sEvents)
 		{
 			if (!sEvents.isEmpty() && sEvents.getLast().endsWith("  " + text)) return; // skip repeats
 			sEvents.add(line);
 			while (sEvents.size() > MAX_EVENTS) sEvents.removeFirst();
+			joined = android.text.TextUtils.join("\n", sEvents);
+		}
+		Context ctx = sAppContext;
+		if (ctx != null)
+		{
+			PreferenceManager.getDefaultSharedPreferences(ctx).edit().putString(PREF_EVENT_LOG, joined).apply();
 		}
 	}
 
@@ -279,6 +307,53 @@ public class ObdBackgroundService extends Service
 	};
 
 	/** Bluetooth switched on → connect right away */
+	/**
+	 * Head units usually go to standby instead of shutting down, so there is no
+	 * BOOT_COMPLETED when the car starts. Screen on / unlock / the adapter's BT
+	 * link coming up are the signals that the car is back: connect right away
+	 * (and drop a link that silently died during standby).
+	 */
+	private final BroadcastReceiver wakeReceiver = new BroadcastReceiver()
+	{
+		@Override
+		public void onReceive(Context context, Intent intent)
+		{
+			String action = intent.getAction();
+			if (BluetoothDevice.ACTION_ACL_CONNECTED.equals(action))
+			{
+				BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+				String saved = prefs.getString(PREF_DEVICE_ADDRESS, null);
+				if (device == null || saved == null || !saved.equalsIgnoreCase(device.getAddress())) return;
+				kick("OBD 裝置藍牙已連上");
+			}
+			else
+			{
+				kick(Intent.ACTION_SCREEN_ON.equals(action) ? "螢幕開啟" : "使用者解鎖");
+			}
+		}
+	};
+
+	/** Something suggests the car is (back) on: make sure we are connected and data flows */
+	private void kick(String reason)
+	{
+		if (stopping || commService == null) return;
+		CommService.STATE state = commService.getState();
+		if (state == CommService.STATE.CONNECTED)
+		{
+			if (System.currentTimeMillis() - sLastDataMs > 20000)
+			{
+				logEvent(reason + " → 連線沒有資料，重新連線");
+				commService.stop(); // → OFFLINE → retry
+			}
+		}
+		else if (state != CommService.STATE.CONNECTING)
+		{
+			logEvent(reason + " → 立即連線");
+			retryCount = 0;
+			scheduleConnect(1000);
+		}
+	}
+
 	private final BroadcastReceiver btStateReceiver = new BroadcastReceiver()
 	{
 		@Override
@@ -329,6 +404,8 @@ public class ObdBackgroundService extends Service
 	{
 		super.onCreate();
 		prefs = PreferenceManager.getDefaultSharedPreferences(this);
+		initEventLog(this);
+		logEvent("背景服務啟動");
 		createNotificationChannel();
 		startInForeground("啟動中…");
 
@@ -337,6 +414,10 @@ public class ObdBackgroundService extends Service
 		ObdProt.PidPvs.addPvChangeListener(dataListener, PvChangeEvent.PV_ADDED);
 		prefs.registerOnSharedPreferenceChangeListener(prefListener);
 		registerReceiver(btStateReceiver, new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED));
+		IntentFilter wakeFilter = new IntentFilter(Intent.ACTION_SCREEN_ON);
+		wakeFilter.addAction(Intent.ACTION_USER_PRESENT);
+		wakeFilter.addAction(BluetoothDevice.ACTION_ACL_CONNECTED);
+		registerReceiver(wakeReceiver, wakeFilter);
 
 		mqtt = MqttPublisher.get(this);
 		mqtt.start(this::snapshot);
@@ -401,6 +482,7 @@ public class ObdBackgroundService extends Service
 		stopping = true;
 		handler.removeCallbacksAndMessages(null);
 		try { unregisterReceiver(btStateReceiver); } catch (Exception ignored) { }
+		try { unregisterReceiver(wakeReceiver); } catch (Exception ignored) { }
 		prefs.unregisterOnSharedPreferenceChangeListener(prefListener);
 		if (mqtt != null)
 		{
