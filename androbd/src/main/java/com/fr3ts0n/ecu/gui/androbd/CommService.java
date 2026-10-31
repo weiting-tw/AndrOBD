@@ -42,6 +42,14 @@ public abstract class CommService
 		NETWORK       ///< Network/WIFI device
 	}
 
+	/** Handler message types sent to the owner of a CommService */
+	public static final int MESSAGE_STATE_CHANGE = 1;
+	public static final int MESSAGE_DEVICE_NAME = 4;
+	public static final int MESSAGE_TOAST = 5;
+	/** Bundle keys for handler messages */
+	public static final String DEVICE_NAME = "device_name";
+	public static final String TOAST = "toast";
+
 	/** media type selection */
 	static MEDIUM medium = MEDIUM.BLUETOOTH;
 
@@ -91,7 +99,6 @@ public abstract class CommService
 	CommService()
 	{
 		super();
-		// mAdapter = MainActivity.mBluetoothAdapter;
 		mState = STATE.NONE;
 	}
 
@@ -146,7 +153,7 @@ public abstract class CommService
 		// after the Activity is gone) — guard to avoid NPE on background paths.
 		if (mHandler != null)
 		{
-			mHandler.obtainMessage(MainActivity.MESSAGE_STATE_CHANGE, state).sendToTarget();
+			mHandler.obtainMessage(MESSAGE_STATE_CHANGE, state).sendToTarget();
 		}
 	}
 
@@ -197,9 +204,9 @@ public abstract class CommService
 		// may be null on background / Activity-gone paths)
 		if (mHandler != null && mContext != null)
 		{
-			Message msg = mHandler.obtainMessage(MainActivity.MESSAGE_TOAST);
+			Message msg = mHandler.obtainMessage(MESSAGE_TOAST);
 			Bundle bundle = new Bundle();
-			bundle.putString(MainActivity.TOAST, mContext.getString(R.string.unabletoconnect));
+			bundle.putString(TOAST, mContext.getString(R.string.unabletoconnect));
 			msg.setData(bundle);
 			mHandler.sendMessage(msg);
 		}
@@ -217,9 +224,9 @@ public abstract class CommService
 		// may be null on background / Activity-gone paths)
 		if (mHandler != null && mContext != null)
 		{
-			Message msg = mHandler.obtainMessage(MainActivity.MESSAGE_TOAST);
+			Message msg = mHandler.obtainMessage(MESSAGE_TOAST);
 			Bundle bundle = new Bundle();
-			bundle.putString(MainActivity.TOAST, mContext.getString(R.string.connectionlost));
+			bundle.putString(TOAST, mContext.getString(R.string.connectionlost));
 			msg.setData(bundle);
 			mHandler.sendMessage(msg);
 		}
@@ -234,9 +241,9 @@ public abstract class CommService
 		// (guarded: handler may be null on background / Activity-gone paths)
 		if (mHandler != null)
 		{
-			Message msg = mHandler.obtainMessage(MainActivity.MESSAGE_DEVICE_NAME);
+			Message msg = mHandler.obtainMessage(MESSAGE_DEVICE_NAME);
 			Bundle bundle = new Bundle();
-			bundle.putString(MainActivity.DEVICE_NAME, deviceName);
+			bundle.putString(DEVICE_NAME, deviceName);
 			msg.setData(bundle);
 			mHandler.sendMessage(msg);
 		}

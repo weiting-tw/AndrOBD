@@ -63,8 +63,16 @@ public class BtCommService extends CommService
 
 		// Always cancel discovery because it will slow down a connection
 		// Member fields
-		BluetoothAdapter mAdapter = BluetoothAdapter.getDefaultAdapter();
-		mAdapter.cancelDiscovery();
+		// (needs BLUETOOTH_SCAN on Android 12+ — never let that crash the service)
+		try
+		{
+			BluetoothAdapter mAdapter = BluetoothAdapter.getDefaultAdapter();
+			if (mAdapter != null) mAdapter.cancelDiscovery();
+		}
+		catch (Exception e)
+		{
+			log.log(Level.FINE, "cancelDiscovery failed: " + e);
+		}
 		
 		// set up protocol handlers
 		elm.addTelegramWriter(ser);

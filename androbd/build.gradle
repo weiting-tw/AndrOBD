@@ -6,11 +6,10 @@ android {
     defaultConfig {
         applicationId 'com.fr3ts0n.ecu.gui.androbd'
         minSdkVersion 17
-        // SDK 25 to allow background service mechanism for plugins
         //noinspection ExpiredTargetSdkVersion
         targetSdkVersion 34
-        versionCode 20625
-        versionName 'V2.6.16-API34-v14'
+        versionCode 20626
+        versionName 'V2.6.16-API34-v15-simple'
 
         testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
 
@@ -65,11 +64,7 @@ android {
 }
 
 dependencies {
-    implementation project(':plugin')
     implementation project(':mqttbuiltin')
     implementation project(':library')
-    implementation fileTree(include: ['*.jar'], dir: 'libs')
-    implementation 'com.github.mik3y:usb-serial-for-android:3.9.0'
-    implementation 'com.github.anastr:speedviewlib:1.6.1'
     implementation 'androidx.core:core-ktx:1.12.0'
 }
