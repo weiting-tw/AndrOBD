@@ -101,6 +101,11 @@ public class ObdBackgroundService extends Service
 	public static final String PREF_ADAPTIVE_TIMING = "adaptive_timing_mode";
 	public static final String PREF_CUSTOM_INIT = "elm_custom_init_cmds";
 	public static final String PREF_MEASURE_SYSTEM = "measure_system";
+	/* ELM settings of the former full app — no longer editable, but still applied */
+	public static final String PREF_ELM_CMD_DISABLE = "elm_cmd_disable";
+	public static final String PREF_ELM_RESET_ON_NRC = "elm_reset_on_nrc";
+	public static final String PREF_ELM_MIN_TIMEOUT = "elm_min_timeout";
+	public static final String PREF_DATA_DISABLE_MAX = "data_disable_max";
 
 	private static final String CHANNEL_ID = "obd_service_channel";
 	private static final int NOTIFICATION_ID = 1001;
@@ -122,6 +127,32 @@ public class ObdBackgroundService extends Service
 	private static volatile String sMessage = "";
 	private static volatile long sLastDataMs = 0L;
 	private static volatile String sDeviceName = null;
+
+	/** Recent events (newest last) shown on the status screen for troubleshooting */
+	private static final java.util.LinkedList<String> sEvents = new java.util.LinkedList<>();
+	private static final int MAX_EVENTS = 40;
+
+	static void logEvent(String text)
+	{
+		String line = android.text.format.DateFormat.format("HH:mm:ss", System.currentTimeMillis()) + "  " + text;
+		synchronized (sEvents)
+		{
+			if (!sEvents.isEmpty() && sEvents.getLast().endsWith("  " + text)) return; // skip repeats
+			sEvents.add(line);
+			while (sEvents.size() > MAX_EVENTS) sEvents.removeFirst();
+		}
+	}
+
+	/** @return recent events, newest first */
+	public static List<String> getEvents()
+	{
+		synchronized (sEvents)
+		{
+			List<String> result = new ArrayList<>(sEvents);
+			Collections.reverse(result);
+			return result;
+		}
+	}
 
 	public static boolean isRunning() { return sRunning; }
 
@@ -511,6 +542,7 @@ public class ObdBackgroundService extends Service
 		CommService.STATE previous = sConnState;
 		sConnState = state;
 		log.info("Connection state " + previous + " -> " + state);
+		logEvent("連線狀態 " + previous + " → " + state);
 		switch (state)
 		{
 			case CONNECTED:
@@ -555,6 +587,7 @@ public class ObdBackgroundService extends Service
 		{
 			ElmProt.STAT status = (ElmProt.STAT) evt.getNewValue();
 			sElmStatus = status;
+			logEvent("ELM 狀態 → " + status);
 			if (sConnState != CommService.STATE.CONNECTED) return;
 
 			if (status == ElmProt.STAT.ECU_DETECTED)
@@ -564,6 +597,7 @@ public class ObdBackgroundService extends Service
 				if (CommService.elm.getService() != ObdProt.OBD_SVC_DATA)
 				{
 					log.info("ECU detected → start OBD data polling");
+					logEvent("偵測到 ECU → 開始讀取 OBD 資料");
 					CommService.elm.setService(ObdProt.OBD_SVC_DATA, true);
 				}
 				if (mqtt != null)
@@ -586,6 +620,7 @@ public class ObdBackgroundService extends Service
 		int preferred = prefs.getInt(PREF_ECU_ADDRESS, 0);
 		int address = addresses.contains(preferred) ? preferred : Collections.min(addresses);
 		log.info(String.format("ECUs %s → using 0x%X", addresses, address));
+		logEvent(String.format("多個 ECU %s → 使用 0x%X", addresses, address));
 		CommService.elm.setEcuAddress(address);
 	}
 
@@ -657,6 +692,7 @@ public class ObdBackgroundService extends Service
 		if (state == CommService.STATE.CONNECTING && now - connectStartMs > CONNECT_TIMEOUT)
 		{
 			log.warning("Connect timeout → abort and retry");
+			logEvent("連線逾時 → 中斷並重試");
 			commService.stop(); // → OFFLINE → retry
 		}
 		else if (state == CommService.STATE.CONNECTED && now - sLastDataMs > DATA_TIMEOUT)
@@ -698,6 +734,29 @@ public class ObdBackgroundService extends Service
 			if (key == null || PREF_PROTOCOL.equals(key))
 			{
 				ElmProt.setPreferredProtocol(getPrefsInt(PREF_PROTOCOL, 0));
+			}
+			if (key == null || PREF_ELM_CMD_DISABLE.equals(key))
+			{
+				// commands the user disabled in the old app (e.g. for clone adapters)
+				Set<String> disabled = prefs.getStringSet(PREF_ELM_CMD_DISABLE, null);
+				ElmProt.disableCommands(disabled);
+				if (key == null && disabled != null && !disabled.isEmpty())
+				{
+					logEvent("已停用 ELM 指令：" + disabled);
+				}
+			}
+			if (key == null || PREF_ELM_RESET_ON_NRC.equals(key))
+			{
+				CommService.elm.setResetOnNrc(prefs.getBoolean(PREF_ELM_RESET_ON_NRC, false));
+			}
+			if (key == null || PREF_ELM_MIN_TIMEOUT.equals(key))
+			{
+				CommService.elm.mAdaptiveTiming.setElmTimeoutMin(getPrefsInt(PREF_ELM_MIN_TIMEOUT,
+					CommService.elm.mAdaptiveTiming.getElmTimeoutMin()));
+			}
+			if (key == null || PREF_DATA_DISABLE_MAX.equals(key))
+			{
+				EcuDataItem.MAX_ERROR_COUNT = getPrefsInt(PREF_DATA_DISABLE_MAX, 3);
 			}
 			if (key == null || PREF_MEASURE_SYSTEM.equals(key))
 			{
@@ -757,6 +816,7 @@ public class ObdBackgroundService extends Service
 	private void setMessage(String message)
 	{
 		sMessage = message;
+		logEvent(message);
 		NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
 		if (manager != null && !stopping)
 		{

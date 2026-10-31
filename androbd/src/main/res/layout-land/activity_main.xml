@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="horizontal"
+    android:focusableInTouchMode="true"
+    android:padding="12dp">
+
+    <ScrollView
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="3"
+        android:paddingEnd="12dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView
+                android:id="@+id/status_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="22sp"
+                android:textStyle="bold"
+                android:paddingBottom="4dp" />
+
+            <TextView
+                android:id="@+id/status_details"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="14sp"
+                android:lineSpacingExtra="2dp"
+                android:paddingBottom="8dp" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="8dp"
+                android:text="目前數值（自動送到 Home Assistant）"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/values"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:textIsSelectable="true"
+                android:textSize="12sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="12dp"
+                android:text="事件紀錄（最新在上）"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/events"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:textIsSelectable="true"
+                android:textSize="12sp" />
+        </LinearLayout>
+    </ScrollView>
+
+    <ScrollView
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="2">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <Button
+                android:id="@+id/btn_select_device"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="選擇 OBD 藍牙裝置" />
+            <Button
+                android:id="@+id/btn_reconnect"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="立即連線 / 重新連線" />
+            <Button
+                android:id="@+id/btn_mqtt"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Home Assistant (MQTT) 設定" />
+            <Button
+                android:id="@+id/btn_settings"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="連線設定" />
+            <Button
+                android:id="@+id/btn_battery"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="關閉電池最佳化（建議）" />
+            <Button
+                android:id="@+id/btn_stop"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="停止服務" />
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>

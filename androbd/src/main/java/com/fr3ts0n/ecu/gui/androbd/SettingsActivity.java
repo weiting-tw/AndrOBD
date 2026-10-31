@@ -20,6 +20,7 @@ package com.fr3ts0n.ecu.gui.androbd;
 
 import android.os.Bundle;
 import android.preference.ListPreference;
+import android.preference.MultiSelectListPreference;
 import android.preference.PreferenceActivity;
 
 import com.fr3ts0n.ecu.prot.obd.ElmProt;
@@ -55,6 +56,18 @@ public class SettingsActivity extends PreferenceActivity
 			modeNames[i] = modes[i].toString();
 		}
 		setupList(ObdBackgroundService.PREF_ADAPTIVE_TIMING, modeNames, modeNames);
+
+		// ELM commands to disable (for adapters that don't support them)
+		ElmProt.CMD[] cmds = ElmProt.CMD.values();
+		CharSequence[] cmdNames = new CharSequence[cmds.length];
+		for (int i = 0; i < cmds.length; i++)
+		{
+			cmdNames[i] = cmds[i].toString();
+		}
+		MultiSelectListPreference cmdPref =
+			(MultiSelectListPreference) findPreference(ObdBackgroundService.PREF_ELM_CMD_DISABLE);
+		cmdPref.setEntries(cmdNames);
+		cmdPref.setEntryValues(cmdNames);
 	}
 
 	@SuppressWarnings("deprecation")

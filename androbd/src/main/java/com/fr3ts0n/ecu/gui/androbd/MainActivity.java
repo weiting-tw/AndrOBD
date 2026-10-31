@@ -65,6 +65,7 @@ public class MainActivity extends Activity
 	private TextView statusTitle;
 	private TextView statusDetails;
 	private TextView valuesView;
+	private TextView eventsView;
 	private Button batteryButton;
 	private final Handler handler = new Handler(Looper.getMainLooper());
 
@@ -89,6 +90,7 @@ public class MainActivity extends Activity
 		statusTitle = findViewById(R.id.status_title);
 		statusDetails = findViewById(R.id.status_details);
 		valuesView = findViewById(R.id.values);
+		eventsView = findViewById(R.id.events);
 		batteryButton = findViewById(R.id.btn_battery);
 
 		findViewById(R.id.btn_select_device).setOnClickListener(v -> selectDevice());
@@ -320,6 +322,13 @@ public class MainActivity extends Activity
 			values.append(entry.getKey()).append(": ").append(entry.getValue()).append('\n');
 		}
 		valuesView.setText(values.length() > 0 ? values : "（尚無資料）");
+
+		StringBuilder events = new StringBuilder();
+		for (String line : ObdBackgroundService.getEvents())
+		{
+			events.append(line).append('\n');
+		}
+		eventsView.setText(events.length() > 0 ? events : "（無）");
 	}
 
 	private String formatTime(long ms)
