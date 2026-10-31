@@ -87,6 +87,14 @@ period of time while the ECU recalibrates itself.
         <item>@string/metric</item>
         <item>@string/imperial</item>
     </string-array>
+    <string-array name="comm_medium_options" translatable="false">
+        <item>Bluetooth</item>
+        <item>WiFi / Network</item>
+    </string-array>
+    <string-array name="comm_medium_values" translatable="false">
+        <item>0</item>
+        <item>2</item>
+    </string-array>
     <string-array name="measure_option_values" translatable="false">
         <item>0</item>
         <item>1</item>

@@ -18,6 +18,7 @@
 
 package com.fr3ts0n.ecu.gui.androbd;
 
+import android.Manifest;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -25,524 +26,795 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
-import android.os.Binder;
+import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.Message;
+import android.os.PowerManager;
 import android.preference.PreferenceManager;
 
 import androidx.core.app.NotificationCompat;
+import androidx.core.content.ContextCompat;
 
+import com.fr3ts0n.androbd.plugin.mqtt.MqttPublisher;
+import com.fr3ts0n.ecu.EcuDataItem;
 import com.fr3ts0n.ecu.EcuDataPv;
+import com.fr3ts0n.ecu.prot.obd.ElmProt;
 import com.fr3ts0n.ecu.prot.obd.ObdProt;
 import com.fr3ts0n.pvs.PvChangeEvent;
 import com.fr3ts0n.pvs.PvChangeListener;
+import com.fr3ts0n.pvs.ProcessVar;
 
-import java.lang.ref.WeakReference;
+import java.beans.PropertyChangeEvent;
+import java.beans.PropertyChangeListener;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Background service for OBD communication
- * Provides continuous monitoring and data collection even when app is in background
+ * The one and only owner of the OBD connection.
+ * <p>
+ * Connect → ELM reset/init → ECU detect → OBD service 01 (live data) polling →
+ * MQTT (Home Assistant). Everything runs here in a foreground service, independent
+ * of any UI. Previously the UI (MainActivity) and this service each held their own
+ * connection and only the "OBD data" page started PID polling / plugin feeding,
+ * which is why data (e.g. mileage) only reached Home Assistant after opening that page.
  */
-public class ObdBackgroundService extends Service implements PvChangeListener {
-    
-    private static final String TAG = "ObdBackgroundService";
-    private static final Logger log = Logger.getLogger(TAG);
-    
-    public static final String CHANNEL_ID = "obd_service_channel";
-    private static final int NOTIFICATION_ID = 1001;
-    private static final int RECONNECT_DELAY = 5000; // 5 seconds
-    
-    // Service states
-    public enum ServiceState {
-        STOPPED, STARTING, RUNNING, STOPPING
-    }
-    
-    private ServiceState currentState = ServiceState.STOPPED;
-    private CommService commService;
+public class ObdBackgroundService extends Service
+{
+	private static final String TAG = "ObdBackgroundService";
+	private static final Logger log = Logger.getLogger(TAG);
 
-    // Tracks the most-recently-created instance so a new instance can unregister
-    // a predecessor that was force-killed without onDestroy (its listener would
-    // otherwise leak forever in the static ObdProt.PidPvs map). WeakReference so
-    // we never keep the predecessor alive ourselves — but while it is still
-    // referenced by PidPvs it stays reachable, so we can find and remove it.
-    private static WeakReference<ObdBackgroundService> sLastInstance;
+	/** Intent actions */
+	public static final String ACTION_START = "com.fr3ts0n.androbd.action.START";
+	/** (Re-)connect immediately, e.g. after a new device was selected */
+	public static final String ACTION_RECONNECT = "com.fr3ts0n.androbd.action.RECONNECT";
+	/** Disconnect and stop the service (no auto restart until started again) */
+	public static final String ACTION_STOP = "com.fr3ts0n.androbd.action.STOP";
 
-    // Held as a field (NOT an inline lambda): SharedPreferences keeps listeners
-    // in a WeakHashMap, so an anonymous listener would be garbage-collected and
-    // silently stop firing.
-    private SharedPreferences.OnSharedPreferenceChangeListener prefListener;
-    private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final Handler reconnectHandler = new Handler(Looper.getMainLooper());
-    private final List<ServiceStateListener> stateListeners = new ArrayList<>();
-    
-    private boolean autoReconnect = true;
-    
-    // Binder for local service binding
-    public class LocalBinder extends Binder {
-        public ObdBackgroundService getService() {
-            return ObdBackgroundService.this;
-        }
-    }
-    
-    private final IBinder binder = new LocalBinder();
-    
-    // Interface for service state callbacks
-    public interface ServiceStateListener {
-        void onServiceStateChanged(ServiceState newState);
-        void onDataReceived(String data);
-        void onConnectionStateChanged(CommService.STATE connectionState);
-    }
-    
-    @Override
-    public void onCreate() {
-        super.onCreate();
-        createNotificationChannel();
-        // Clean up a predecessor instance that may have been force-killed without
-        // onDestroy and is still registered in the static PidPvs map (leak + its
-        // pvChanged would keep firing on a dead Service).
-        if (sLastInstance != null) {
-            ObdBackgroundService prev = sLastInstance.get();
-            if (prev != null && prev != this) {
-                ObdProt.PidPvs.removePvChangeListener(prev);
-                log.info("Removed stale predecessor PvChangeListener");
-            }
-        }
-        // idempotent self-register (remove-then-add) so we never double-register
-        ObdProt.PidPvs.removePvChangeListener(this);
-        ObdProt.PidPvs.addPvChangeListener(this, PvChangeEvent.PV_MODIFIED);
-        sLastInstance = new WeakReference<>(this);
+	/** Preference keys */
+	public static final String PREF_DEVICE_ADDRESS = "LAST_DEV_ADDRESS";
+	public static final String PREF_DEVICE_NAME = "LAST_DEV_NAME";
+	public static final String PREF_ECU_ADDRESS = "LAST_ECU_ADDRESS";
+	/** false after the user pressed "stop" — then boot does not auto-start */
+	public static final String PREF_SERVICE_ENABLED = "service_enabled";
+	public static final String PREF_KEEP_AWAKE = "keep_cpu_awake";
+	public static final String PREF_COMM_MEDIUM = "comm_medium";
+	public static final String PREF_BT_SECURE = "bt_secure_connection";
+	public static final String PREF_NET_ADDRESS = "device_address";
+	public static final String PREF_NET_PORT = "device_port";
+	public static final String PREF_PROTOCOL = "protocol";
+	public static final String PREF_ADAPTIVE_TIMING = "adaptive_timing_mode";
+	public static final String PREF_CUSTOM_INIT = "elm_custom_init_cmds";
+	public static final String PREF_MEASURE_SYSTEM = "measure_system";
 
-        // React to auto-connect settings being toggled while the Service runs in
-        // the background (previously the values were only read at connect time,
-        // so turning auto-connect off didn't stop an in-flight reconnect loop).
-        prefListener = (sharedPreferences, key) -> {
-            if (key == null
-                    || "pref_auto_connect".equals(key)
-                    || "pref_continuous_retry".equals(key)) {
-                handleConnectPrefsChanged(sharedPreferences);
-            }
-        };
-        PreferenceManager.getDefaultSharedPreferences(this)
-                .registerOnSharedPreferenceChangeListener(prefListener);
+	private static final String CHANNEL_ID = "obd_service_channel";
+	private static final int NOTIFICATION_ID = 1001;
 
-        log.info("ObdBackgroundService created");
-    }
+	/** Retry delays (ms) while the adapter is unreachable; last value repeats forever */
+	private static final long[] RETRY_DELAYS = {3000, 5000, 10000, 20000, 30000};
+	/** A connect attempt that did not finish within this time is aborted */
+	private static final long CONNECT_TIMEOUT = 30000;
+	/** Connected, but no OBD data for this long → drop the link and reconnect */
+	private static final long DATA_TIMEOUT = 180000;
+	private static final long WATCHDOG_PERIOD = 15000;
+	/** Data older than this is not published (prevents re-sending stale values) */
+	private static final long DATA_FRESHNESS = 120000;
 
-    /**
-     * Apply a live change to the auto-connect preferences. Turning auto-connect
-     * off stops any pending reconnect immediately; turning it back on re-arms so
-     * the next disconnect reconnects again.
-     */
-    private void handleConnectPrefsChanged(SharedPreferences prefs) {
-        boolean autoConnectEnabled = prefs.getBoolean("pref_auto_connect", true);
-        if (!autoConnectEnabled) {
-            log.info("Auto-connect disabled in settings: cancelling pending reconnect");
-            autoReconnect = false;
-            connectAttempts = 0;
-            // NOTE: when the reconnect-dedup PR lands, route this through its
-            // cancelScheduledRetry()/flag reset instead of clearing the handler.
-            reconnectHandler.removeCallbacksAndMessages(null);
-        } else if (!autoReconnect) {
-            log.info("Auto-connect re-enabled in settings");
-            autoReconnect = true;
-        }
-    }
-    
-    @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
-        log.info("ObdBackgroundService onStartCommand (state=" + currentState + ", attempts=" + connectAttempts + ")");
-        // Ensure startForeground is called immediately to prevent crash on Android 8+
-        startForegroundService();
+	/* ---------- state visible to the UI (read-only, polled) ---------- */
+	private static volatile boolean sRunning = false;
+	private static volatile CommService.STATE sConnState = CommService.STATE.NONE;
+	private static volatile ElmProt.STAT sElmStatus = ElmProt.STAT.UNDEFINED;
+	private static volatile String sMessage = "";
+	private static volatile long sLastDataMs = 0L;
+	private static volatile String sDeviceName = null;
 
-        // Re-deliver 時也重置 attempts：避免被系統殺掉重啟後 attempts 沒清、Continuous 關掉時不重連
-        connectAttempts = 0;
-        autoReconnect = true;
+	public static boolean isRunning() { return sRunning; }
 
-        // Only initialize + auto-connect once — START_STICKY may re-deliver onStartCommand。
-        // 不在每次 onStartCommand 都主動連線：MainActivity 前景時自己管連線、
-        // background 太積極會跟它搶同一個藍牙連線造成閃斷。
-        // connectToLatestDevice 本身會檢查「是否已有其他 instance 連著」而讓位。
-        if (commService == null) {
-            initializeCommService();
-            reconnectHandler.postDelayed(this::connectToLatestDevice, 3000);
-        }
+	public static CommService.STATE getConnectionState() { return sConnState; }
 
-        // Return sticky to restart service if killed by system
-        return START_STICKY;
-    }
-    
-    @Override
-    public IBinder onBind(Intent intent) {
-        return binder;
-    }
-    
-    @Override
-    public void onDestroy() {
-        autoReconnect = false;
-        reconnectHandler.removeCallbacksAndMessages(null);
-        if (prefListener != null) {
-            PreferenceManager.getDefaultSharedPreferences(this)
-                    .unregisterOnSharedPreferenceChangeListener(prefListener);
-            prefListener = null;
-        }
-        stopCommService();
-        ObdProt.PidPvs.removePvChangeListener(this);
-        if (sLastInstance != null && sLastInstance.get() == this) {
-            sLastInstance = null;
-        }
-        currentState = ServiceState.STOPPED;
-        notifyStateListeners();
-        log.info("ObdBackgroundService destroyed");
-        super.onDestroy();
-    }
-    
-    private void startForegroundService() {
-        Notification notification = createNotification("OBD Service Running", "Monitoring vehicle data...");
-        
-        try {
-            if (Build.VERSION.SDK_INT >= 34) { // Android 14
-                // On Android 14, using FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE 
-                // requires the app to have BLUETOOTH_CONNECT permission already granted.
-                boolean hasBtPermission = true;
-                if (Build.VERSION.SDK_INT >= 31) {
-                    hasBtPermission = androidx.core.content.ContextCompat.checkSelfPermission(this, android.Manifest.permission.BLUETOOTH_CONNECT) 
-                                      == android.content.pm.PackageManager.PERMISSION_GRANTED;
-                }
-                
-                if (hasBtPermission) {
-                    log.info("Starting foreground with CONNECTED_DEVICE type");
-                    startForeground(NOTIFICATION_ID, notification, 16); // ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-                } else {
-                    log.warning("Bluetooth permission not granted yet, starting without specific type to avoid SecurityException");
-                    startForeground(NOTIFICATION_ID, notification);
-                }
-            } else {
-                startForeground(NOTIFICATION_ID, notification);
-            }
-        } catch (Exception e) {
-            log.log(Level.SEVERE, "Failed to start foreground service", e);
-            // Last resort fallback
-            try {
-                startForeground(NOTIFICATION_ID, notification);
-            } catch (Exception e2) {
-                log.log(Level.SEVERE, "Critical failure in startForeground", e2);
-            }
-        }
-        
-        currentState = ServiceState.RUNNING;
-        notifyStateListeners();
-    }
-    
-    private void createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(
-                CHANNEL_ID,
-                "OBD Service",
-                NotificationManager.IMPORTANCE_LOW
-            );
-            channel.setDescription("Background OBD data monitoring");
-            channel.setShowBadge(false);
-            
-            NotificationManager manager = getSystemService(NotificationManager.class);
-            if (manager != null) {
-                manager.createNotificationChannel(channel);
-            }
-        }
-    }
-    
-    private Notification createNotification(String title, String message) {
-        Intent notificationIntent = new Intent(this, MainActivity.class);
-        PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, 
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0);
-        
-        return new NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(title)
-            .setContentText(message)
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentIntent(pendingIntent)
-            .setOngoing(true)
-            .setAutoCancel(false)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .build();
-    }
-    
-    private void initializeCommService() {
-        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
-        CommService.medium = CommService.MEDIUM.values()[getPrefsInt(prefs, "comm_medium", 0)];
+	public static ElmProt.STAT getElmStatus() { return sElmStatus; }
 
-        Handler serviceHandler = new Handler(Looper.getMainLooper()) {
-            @Override
-            public void handleMessage(android.os.Message msg) {
-                handleCommServiceMessage(msg);
-            }
-        };
-        
-        switch (CommService.medium) {
-            case BLUETOOTH:
-                commService = new BtCommService(this, serviceHandler);
-                break;
-            case USB:
-                commService = new UsbCommService(this, serviceHandler);
-                break;
-            case NETWORK:
-                commService = new NetworkCommService(this, serviceHandler);
-                break;
-        }
-        
-        if (commService != null) {
-            commService.start();
-        }
-    }
-    
-    private void stopCommService() {
-        if (commService != null) {
-            commService.stop();
-            commService = null;
-        }
-    }
-    
-    private void handleCommServiceMessage(android.os.Message msg) {
-        switch (msg.what) {
-            case MainActivity.MESSAGE_STATE_CHANGE:
-                CommService.STATE state = (CommService.STATE) msg.obj;
-                notifyConnectionStateChanged(state);
-                
-                String notificationText = getNotificationTextForState(state);
-                updateNotification("OBD Service", notificationText);
+	public static String getStatusMessage() { return sMessage; }
 
-                if (state == CommService.STATE.OFFLINE && autoReconnect) {
-                    scheduleReconnect();
-                } else if (state == CommService.STATE.CONNECTED) {
-                    reconnectHandler.removeCallbacksAndMessages(null);
-                    connectAttempts = 0; // Reset so future disconnects can retry
-                }
-                break;
-        }
-    }
-    
-    private String getNotificationTextForState(CommService.STATE state) {
-        switch (state) {
-            case CONNECTING:
-                return "Connecting to OBD device...";
-            case CONNECTED:
-                return "Connected - Monitoring vehicle data";
-            case LISTEN:
-                return "Waiting for connection...";
-            default:
-                return "OBD service running";
-        }
-    }
-    
-    private void updateNotification(String title, String message) {
-        Notification notification = createNotification(title, message);
-        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (manager != null) {
-            manager.notify(NOTIFICATION_ID, notification);
-        }
-    }
+	public static long getLastDataMs() { return sLastDataMs; }
 
-    private int connectAttempts = 0;
-    private static final int MAX_CONNECT_ATTEMPTS = 3;
+	public static String getDeviceName() { return sDeviceName; }
 
-    private void connectToLatestDevice() {
-        reconnectHandler.removeCallbacksAndMessages(null); // Prevent overlapping schedules
+	/** Convenience: start (or poke) the service with an action */
+	public static void start(Context context, String action)
+	{
+		Intent intent = new Intent(context, ObdBackgroundService.class).setAction(action);
+		try
+		{
+			ContextCompat.startForegroundService(context, intent);
+		}
+		catch (Exception e)
+		{
+			log.log(Level.WARNING, "Unable to start service: " + e);
+		}
+	}
 
-        if (getConnectionState() == CommService.STATE.CONNECTED ||
-            getConnectionState() == CommService.STATE.CONNECTING) {
-            log.info("Auto-connect: Already connected or connecting.");
-            return;
-        }
+	/* ---------- instance ---------- */
+	private final Handler handler = new Handler(Looper.getMainLooper());
+	private SharedPreferences prefs;
+	private CommService commService;
+	private PowerManager.WakeLock wakeLock;
+	private MqttPublisher mqtt;
+	private int retryCount = 0;
+	private boolean stopping = false;
+	private long connectStartMs = 0L;
 
-        // 若 MainActivity(或其他 instance) 已經連著同一裝置、就別去搶 —
-        // ELM327 藍牙只接受一條連線、兩邊同連會互相 cancel 造成閃斷
-        if (CommService.isOtherInstanceConnected(commService)) {
-            log.info("Auto-connect: another CommService instance is connected, deferring.");
-            // 不連、不算 attempt；排一個輕量 re-check、好在對方斷線後接手
-            reconnectHandler.removeCallbacksAndMessages(null);
-            reconnectHandler.postDelayed(this::connectToLatestDevice, 15000);
-            return;
-        }
+	/** true while a (re)connect is scheduled — avoids stacking retries */
+	private boolean connectPending = false;
+	private final Runnable connectRunnable = () -> {
+		connectPending = false;
+		connect();
+	};
 
-        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
-        
-        // Check if user has enabled auto-connect in settings
-        boolean autoConnectEnabled = prefs.getBoolean("pref_auto_connect", true);
-        if (!autoConnectEnabled) {
-            log.info("Auto-connect: Disabled by user in settings.");
-            return;
-        }
+	/** Messages from CommService (connection state) */
+	private final Handler commHandler = new Handler(Looper.getMainLooper())
+	{
+		@Override
+		public void handleMessage(Message msg)
+		{
+			switch (msg.what)
+			{
+				case CommService.MESSAGE_STATE_CHANGE:
+					onConnectionState((CommService.STATE) msg.obj);
+					break;
+				case CommService.MESSAGE_DEVICE_NAME:
+					String name = msg.getData().getString(CommService.DEVICE_NAME);
+					if (name != null) sDeviceName = name;
+					break;
+				default:
+					break;
+			}
+		}
+	};
 
-        boolean continuousRetry = prefs.getBoolean("pref_continuous_retry", false);
-        String address = prefs.getString("LAST_DEV_ADDRESS", null);
-        
-        if (address == null) {
-            log.info("Auto-connect skipped: No last device address found.");
-            return;
-        }
+	/** ELM protocol status / ECU detection (called on the protocol thread) */
+	private final PropertyChangeListener elmListener = new PropertyChangeListener()
+	{
+		@Override
+		public void propertyChange(final PropertyChangeEvent evt)
+		{
+			handler.post(() -> onElmPropertyChange(evt));
+		}
+	};
 
-        connectAttempts++;
-        String retryStatus = continuousRetry ? "(Continuous)" : "(" + connectAttempts + "/" + MAX_CONNECT_ATTEMPTS + ")";
-        log.info("Auto-connecting to " + address + " " + retryStatus);
-        mainHandler.post(() -> android.widget.Toast.makeText(this, "Auto-connect " + retryStatus + ": " + address, android.widget.Toast.LENGTH_SHORT).show());
+	/** A value of any OBD data item changed = the link is alive */
+	private final PvChangeListener valueListener = new PvChangeListener()
+	{
+		@Override
+		public void pvChanged(PvChangeEvent event)
+		{
+			sLastDataMs = System.currentTimeMillis();
+		}
+	};
 
-        // BT adapter 未就緒 → 自己排 5s retry、不走後面 try/finally 避免重複排程
-        if (CommService.medium == CommService.MEDIUM.BLUETOOTH) {
-            BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
-            if (adapter == null || !adapter.isEnabled()) {
-                log.info("Auto-connect: BT adapter not ready, retrying in 5s...");
-                connectAttempts--; // Don't count this as a real attempt
-                reconnectHandler.postDelayed(this::connectToLatestDevice, 5000);
-                return;
-            }
-        }
+	/**
+	 * New data items were added to the list → watch their values.
+	 * (Value changes of child PVs are NOT forwarded to listeners of the list
+	 * itself, so each item needs its own listener.)
+	 */
+	private final PvChangeListener dataListener = new PvChangeListener()
+	{
+		@Override
+		public void pvChanged(PvChangeEvent event)
+		{
+			if ((event.getType() & PvChangeEvent.PV_ADDED) == 0) return;
+			Object value = event.getValue();
+			if (value instanceof Object[])
+			{
+				for (Object o : (Object[]) value) watch(o);
+			}
+			else
+			{
+				watch(value);
+			}
+		}
 
-        try {
-            if (CommService.medium == CommService.MEDIUM.BLUETOOTH) {
-                BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
-                BluetoothDevice device = adapter.getRemoteDevice(address);
-                boolean secure = prefs.getBoolean("bt_secure_connection", false);
-                connectToDevice(device, secure);
-            } else if (CommService.medium == CommService.MEDIUM.NETWORK) {
-                String host = prefs.getString("device_address", "192.168.0.10");
-                int port = getPrefsInt(prefs, "device_port", 35000);
-                connectToDevice(host + ":" + port, true);
-            }
-        } catch (Exception e) {
-            // Bad MAC/host/port、adapter NPE 等同步例外 — 不能讓它打斷重排
-            log.warning("Auto-connect attempt threw (will still schedule retry): " + e.getMessage());
-        } finally {
-            // 任何結束路徑（成功送出/同步例外）都要排下一次重試、確保 self-healing
-            if (continuousRetry || connectAttempts < MAX_CONNECT_ATTEMPTS) {
-                reconnectHandler.postDelayed(() -> {
-                    if (getConnectionState() != CommService.STATE.CONNECTED) {
-                        connectToLatestDevice();
-                    }
-                }, 10000);
-            }
-        }
-    }
+		private void watch(Object o)
+		{
+			if (o instanceof ProcessVar)
+			{
+				((ProcessVar) o).addPvChangeListener(valueListener, PvChangeEvent.PV_MODIFIED);
+			}
+		}
+	};
 
-    private void scheduleReconnect() {
-        reconnectHandler.removeCallbacksAndMessages(null);
-        reconnectHandler.postDelayed(() -> {
-            log.info("Attempting auto-reconnect...");
-            connectToLatestDevice();
-        }, RECONNECT_DELAY);
-    }
-    
-    public void connectToDevice(Object device, boolean secure) {
-        if (commService != null) {
-            if (commService instanceof NetworkCommService && device instanceof String) {
-                String[] parts = ((String) device).split(":");
-                String host = parts[0];
-                int port = Integer.parseInt(parts[1]);
-                ((NetworkCommService) commService).connect(host, port);
-            } else {
-                // Try to establish connection
-                log.info("Initiating connection attempt (Secure: " + secure + ")");
-                commService.connect(device, secure);
-            }
-        }
-    }
-    
-    public void disconnect() {
-        if (commService != null) {
-            commService.stop();
-        }
-    }
-    
-    public ServiceState getCurrentState() {
-        return currentState;
-    }
-    
-    public CommService.STATE getConnectionState() {
-        return commService != null ? commService.getState() : CommService.STATE.NONE;
-    }
-    
-    // Listener management
-    public void addStateListener(ServiceStateListener listener) {
-        if (!stateListeners.contains(listener)) {
-            stateListeners.add(listener);
-        }
-    }
-    
-    public void removeStateListener(ServiceStateListener listener) {
-        stateListeners.remove(listener);
-    }
-    
-    private void notifyStateListeners() {
-        mainHandler.post(() -> {
-            for (ServiceStateListener listener : stateListeners) {
-                listener.onServiceStateChanged(currentState);
-            }
-        });
-    }
-    
-    private void notifyDataReceived(String data) {
-        mainHandler.post(() -> {
-            for (ServiceStateListener listener : stateListeners) {
-                listener.onDataReceived(data);
-            }
-        });
-    }
-    
-    private void notifyConnectionStateChanged(CommService.STATE state) {
-        mainHandler.post(() -> {
-            for (ServiceStateListener listener : stateListeners) {
-                listener.onConnectionStateChanged(state);
-            }
-        });
-    }
+	/** Bluetooth switched on → connect right away */
+	private final BroadcastReceiver btStateReceiver = new BroadcastReceiver()
+	{
+		@Override
+		public void onReceive(Context context, Intent intent)
+		{
+			int state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR);
+			if (state == BluetoothAdapter.STATE_ON)
+			{
+				log.info("Bluetooth turned on → connect");
+				retryCount = 0;
+				scheduleConnect(2000);
+			}
+			else if (state == BluetoothAdapter.STATE_OFF)
+			{
+				setMessage("藍牙已關閉，等待開啟…");
+			}
+		}
+	};
 
-    private int getPrefsInt(SharedPreferences prefs, String key, int defaultValue) {
-        try {
-            return Integer.parseInt(prefs.getString(key, String.valueOf(defaultValue)));
-        } catch (Exception e) {
-            return defaultValue;
-        }
-    }
+	private final SharedPreferences.OnSharedPreferenceChangeListener prefListener =
+		(sharedPreferences, key) -> {
+			applyElmSettings(key);
+			if (PREF_KEEP_AWAKE.equals(key)) updateWakeLock();
+			if (PREF_COMM_MEDIUM.equals(key)) recreateCommService();
+		};
 
-    @Override
-    public void pvChanged(PvChangeEvent event) {
-        // If this Service has been stopped (normal onDestroy path) ignore late
-        // callbacks instead of broadcasting from a torn-down Service context.
-        if (currentState == ServiceState.STOPPED) {
-            return;
-        }
-        if (event.getType() == PvChangeEvent.PV_MODIFIED) {
-            try {
-                EcuDataPv pv = (EcuDataPv) event.getSource();
-                String mnemonic = (String) pv.get(EcuDataPv.FID_MNEMONIC);
-                Object value = pv.get(EcuDataPv.FIELDS[EcuDataPv.FID_VALUE]);
-                String unit = pv.getUnits();
+	/** Periodic health check: stuck connects and dead links */
+	private final Runnable watchdog = new Runnable()
+	{
+		@Override
+		public void run()
+		{
+			try
+			{
+				checkHealth();
+			}
+			finally
+			{
+				handler.postDelayed(this, WATCHDOG_PERIOD);
+			}
+		}
+	};
 
-                String payload = String.format("{\"mnemonic\":\"%s\", \"value\":\"%s\", \"unit\":\"%s\"}",
-                                              mnemonic, value, unit);
+	/* ======================= lifecycle ======================= */
 
-                // Send system-wide broadcast for Home Assistant or other apps to consume
-                Intent broadcastIntent = new Intent("com.fr3ts0n.androbd.DATA_UPDATE");
-                broadcastIntent.putExtra("mnemonic", mnemonic);
-                broadcastIntent.putExtra("value", String.valueOf(value));
-                broadcastIntent.putExtra("unit", unit);
-                broadcastIntent.putExtra("json_payload", payload);
-                sendBroadcast(broadcastIntent);
+	@Override
+	public void onCreate()
+	{
+		super.onCreate();
+		prefs = PreferenceManager.getDefaultSharedPreferences(this);
+		createNotificationChannel();
+		startInForeground("啟動中…");
 
-                notifyDataReceived(payload);
-            } catch (Exception e) {
-                // never let a data-update callback crash the protocol thread
-                log.warning("pvChanged failed: " + e.getMessage());
-            }
-        }
-    }
+		applyElmSettings(null);
+		CommService.elm.addPropertyChangeListener(elmListener);
+		ObdProt.PidPvs.addPvChangeListener(dataListener, PvChangeEvent.PV_ADDED);
+		prefs.registerOnSharedPreferenceChangeListener(prefListener);
+		registerReceiver(btStateReceiver, new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED));
+
+		mqtt = MqttPublisher.get(this);
+		mqtt.start(this::snapshot);
+
+		updateWakeLock();
+		handler.postDelayed(watchdog, WATCHDOG_PERIOD);
+		sRunning = true;
+		log.info("ObdBackgroundService created");
+	}
+
+	@Override
+	public int onStartCommand(Intent intent, int flags, int startId)
+	{
+		// must be called quickly after startForegroundService()
+		startInForeground(sMessage.isEmpty() ? "啟動中…" : sMessage);
+
+		String action = intent != null ? intent.getAction() : null;
+		log.info("onStartCommand action=" + action + " state=" + sConnState);
+
+		if (ACTION_STOP.equals(action))
+		{
+			prefs.edit().putBoolean(PREF_SERVICE_ENABLED, false).apply();
+			stopping = true;
+			stopSelf();
+			return START_NOT_STICKY;
+		}
+
+		prefs.edit().putBoolean(PREF_SERVICE_ENABLED, true).apply();
+		stopping = false;
+
+		if (commService == null)
+		{
+			recreateCommService();
+		}
+		if (ACTION_RECONNECT.equals(action))
+		{
+			// drop a current link (possibly to another device) and connect anew
+			retryCount = 0;
+			if (sConnState == CommService.STATE.CONNECTED || sConnState == CommService.STATE.CONNECTING)
+			{
+				disconnectQuietly();
+			}
+			scheduleConnect(500);
+		}
+		else if (sConnState != CommService.STATE.CONNECTED && sConnState != CommService.STATE.CONNECTING)
+		{
+			retryCount = 0;
+			scheduleConnect(1000);
+		}
+		return START_STICKY;
+	}
+
+	@Override
+	public IBinder onBind(Intent intent)
+	{
+		return null;
+	}
+
+	@Override
+	public void onDestroy()
+	{
+		stopping = true;
+		handler.removeCallbacksAndMessages(null);
+		try { unregisterReceiver(btStateReceiver); } catch (Exception ignored) { }
+		prefs.unregisterOnSharedPreferenceChangeListener(prefListener);
+		if (mqtt != null)
+		{
+			mqtt.publishStatus("offline");
+			mqtt.stop();
+		}
+		CommService.elm.removePropertyChangeListener(elmListener);
+		ObdProt.PidPvs.removePvChangeListener(dataListener);
+		for (Object o : currentPvs())
+		{
+			if (o instanceof ProcessVar) ((ProcessVar) o).removePvChangeListener(valueListener);
+		}
+		if (commService != null)
+		{
+			try { CommService.elm.goToSleep(); } catch (Exception ignored) { }
+			commService.stop();
+			commService = null;
+		}
+		releaseWakeLock();
+		sRunning = false;
+		sConnState = CommService.STATE.NONE;
+		sElmStatus = ElmProt.STAT.UNDEFINED;
+		sMessage = "服務已停止";
+		log.info("ObdBackgroundService destroyed");
+		super.onDestroy();
+	}
+
+	/* ======================= connection ======================= */
+
+	private void recreateCommService()
+	{
+		if (commService != null)
+		{
+			disconnectQuietly();
+			commService = null;
+		}
+		CommService.medium = getMedium();
+		if (CommService.medium == CommService.MEDIUM.NETWORK)
+		{
+			commService = new NetworkCommService(this, commHandler);
+		}
+		else
+		{
+			if (BluetoothAdapter.getDefaultAdapter() == null)
+			{
+				setMessage("此裝置沒有藍牙");
+				return;
+			}
+			commService = new BtCommService(this, commHandler);
+		}
+		sConnState = CommService.STATE.NONE;
+	}
+
+	/** Stop the current link without triggering an automatic retry storm */
+	private void disconnectQuietly()
+	{
+		handler.removeCallbacks(connectRunnable);
+		connectPending = false;
+		if (commService != null)
+		{
+			commService.stop();
+		}
+	}
+
+	private void scheduleConnect(long delayMs)
+	{
+		handler.removeCallbacks(connectRunnable);
+		connectPending = !stopping;
+		if (!stopping)
+		{
+			handler.postDelayed(connectRunnable, delayMs);
+		}
+	}
+
+	private void scheduleRetry()
+	{
+		long delay = RETRY_DELAYS[Math.min(retryCount, RETRY_DELAYS.length - 1)];
+		retryCount++;
+		setMessage(String.format("未連線，%d 秒後重試（第 %d 次）", delay / 1000, retryCount));
+		scheduleConnect(delay);
+	}
+
+	private void connect()
+	{
+		if (stopping) return;
+		if (commService == null) recreateCommService();
+		if (commService == null) return;
+
+		CommService.STATE state = commService.getState();
+		if (state == CommService.STATE.CONNECTED || state == CommService.STATE.CONNECTING)
+		{
+			return;
+		}
+
+		try
+		{
+			if (CommService.medium == CommService.MEDIUM.NETWORK)
+			{
+				String host = prefs.getString(PREF_NET_ADDRESS, "192.168.0.10");
+				int port = getPrefsInt(PREF_NET_PORT, 35000);
+				setMessage("連線中 " + host + ":" + port + " …");
+				connectStartMs = System.currentTimeMillis();
+				((NetworkCommService) commService).connect(host, port);
+				return;
+			}
+
+			// ----- Bluetooth -----
+			if (Build.VERSION.SDK_INT >= 31
+				&& ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
+				!= PackageManager.PERMISSION_GRANTED)
+			{
+				setMessage("缺少藍牙權限，請開啟 App 授權");
+				return; // UI will restart us after permission was granted
+			}
+			BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+			if (adapter == null)
+			{
+				setMessage("此裝置沒有藍牙");
+				return;
+			}
+			if (!adapter.isEnabled())
+			{
+				// btStateReceiver reconnects as soon as BT is switched on
+				setMessage("藍牙已關閉，等待開啟…");
+				return;
+			}
+			String address = prefs.getString(PREF_DEVICE_ADDRESS, null);
+			if (address == null || !BluetoothAdapter.checkBluetoothAddress(address))
+			{
+				setMessage("尚未選擇 OBD 裝置");
+				return;
+			}
+			BluetoothDevice device = adapter.getRemoteDevice(address);
+			String name = prefs.getString(PREF_DEVICE_NAME, address);
+			setMessage("連線中 " + name + " …");
+			connectStartMs = System.currentTimeMillis();
+			commService.connect(device, prefs.getBoolean(PREF_BT_SECURE, false));
+		}
+		catch (Exception e)
+		{
+			log.log(Level.WARNING, "connect failed", e);
+			scheduleRetry();
+		}
+	}
+
+	private void onConnectionState(CommService.STATE state)
+	{
+		CommService.STATE previous = sConnState;
+		sConnState = state;
+		log.info("Connection state " + previous + " -> " + state);
+		switch (state)
+		{
+			case CONNECTED:
+				handler.removeCallbacks(connectRunnable);
+				connectPending = false;
+				retryCount = 0;
+				sLastDataMs = System.currentTimeMillis(); // grace period for the watchdog
+				setMessage("已連線，初始化 ELM…");
+				// reset + init the ELM adapter → ECU detection → (elmListener) start data polling
+				CommService.elm.reset();
+				break;
+
+			case CONNECTING:
+				break;
+
+			default:
+				// OFFLINE / NONE / LISTEN — connection failed or lost
+				if (previous == CommService.STATE.CONNECTED && mqtt != null)
+				{
+					mqtt.publishStatus("offline");
+				}
+				sElmStatus = ElmProt.STAT.DISCONNECTED;
+				if (!stopping && !connectPending)
+				{
+					scheduleRetry();
+				}
+				break;
+		}
+	}
+
+	/* ======================= ELM / OBD ======================= */
+
+	@SuppressWarnings("unchecked")
+	private void onElmPropertyChange(PropertyChangeEvent evt)
+	{
+		String prop = evt.getPropertyName();
+		if (ElmProt.PROP_ECU_ADDRESS.equals(prop))
+		{
+			selectEcu(new HashSet<>((Set<Integer>) evt.getNewValue()));
+		}
+		else if (ElmProt.PROP_STATUS.equals(prop))
+		{
+			ElmProt.STAT status = (ElmProt.STAT) evt.getNewValue();
+			sElmStatus = status;
+			if (sConnState != CommService.STATE.CONNECTED) return;
+
+			if (status == ElmProt.STAT.ECU_DETECTED)
+			{
+				// THE missing step: start reading live data (service 01) right away,
+				// no UI needed. Includes odometer / distance PIDs if the car supports them.
+				if (CommService.elm.getService() != ObdProt.OBD_SVC_DATA)
+				{
+					log.info("ECU detected → start OBD data polling");
+					CommService.elm.setService(ObdProt.OBD_SVC_DATA, true);
+				}
+				if (mqtt != null)
+				{
+					mqtt.resetChangeTracking();
+					mqtt.publishStatus("online");
+				}
+			}
+			setMessage("已連線 " + (sDeviceName != null ? sDeviceName : "") + " — " + status);
+		}
+	}
+
+	/**
+	 * Several ECUs answered: use the remembered one, otherwise the lowest address
+	 * (normally the engine ECU, e.g. 0x7E8). No dialog — this runs unattended.
+	 */
+	private void selectEcu(Set<Integer> addresses)
+	{
+		if (addresses == null || addresses.size() <= 1) return;
+		int preferred = prefs.getInt(PREF_ECU_ADDRESS, 0);
+		int address = addresses.contains(preferred) ? preferred : Collections.min(addresses);
+		log.info(String.format("ECUs %s → using 0x%X", addresses, address));
+		CommService.elm.setEcuAddress(address);
+	}
+
+	/** Snapshot of current OBD values for MQTT (called on the MQTT thread) */
+	private Map<String, String> snapshot()
+	{
+		Map<String, String> result = new LinkedHashMap<>();
+		if (sConnState != CommService.STATE.CONNECTED
+			|| System.currentTimeMillis() - sLastDataMs > DATA_FRESHNESS)
+		{
+			return result;
+		}
+		List<Object> pvs = currentPvs();
+		List<String> names = new ArrayList<>();
+		for (Object o : pvs)
+		{
+			if (!(o instanceof EcuDataPv)) continue;
+			EcuDataPv pv = (EcuDataPv) o;
+			Object mnemonic = pv.get(EcuDataPv.FID_MNEMONIC);
+			Object value = pv.get(EcuDataPv.FIELDS[EcuDataPv.FID_VALUE]);
+			if (mnemonic == null || value == null) continue;
+			result.put(mnemonic.toString(), value.toString());
+			names.add(mnemonic.toString());
+		}
+		if (mqtt != null && !names.isEmpty())
+		{
+			mqtt.addKnownItems(names);
+		}
+		return result;
+	}
+
+	/**
+	 * Copy the PV list under the list lock only (do NOT touch the PVs while holding
+	 * it: the protocol thread locks PV → list, so list → PV here could deadlock).
+	 */
+	private static List<Object> currentPvs()
+	{
+		synchronized (ObdProt.PidPvs)
+		{
+			return new ArrayList<Object>(ObdProt.PidPvs.values());
+		}
+	}
+
+	/** Current values sorted by description, for the status screen */
+	public static Map<String, String> displayValues()
+	{
+		TreeMap<String, String> result = new TreeMap<>();
+		for (Object o : currentPvs())
+		{
+			if (!(o instanceof EcuDataPv)) continue;
+			EcuDataPv pv = (EcuDataPv) o;
+			Object mnemonic = pv.get(EcuDataPv.FID_MNEMONIC);
+			Object value = pv.get(EcuDataPv.FIELDS[EcuDataPv.FID_VALUE]);
+			if (mnemonic == null || value == null) continue;
+			Object descr = pv.get(EcuDataPv.FIELDS[EcuDataPv.FID_DESCRIPT]);
+			String units = pv.getUnits();
+			String label = (descr != null ? descr.toString() : mnemonic.toString());
+			result.put(label, value + (units != null && !units.isEmpty() ? " " + units : "")
+				+ "   [" + mnemonic + "]");
+		}
+		return result;
+	}
+
+	private void checkHealth()
+	{
+		if (stopping || commService == null) return;
+		long now = System.currentTimeMillis();
+		CommService.STATE state = commService.getState();
+		if (state == CommService.STATE.CONNECTING && now - connectStartMs > CONNECT_TIMEOUT)
+		{
+			log.warning("Connect timeout → abort and retry");
+			commService.stop(); // → OFFLINE → retry
+		}
+		else if (state == CommService.STATE.CONNECTED && now - sLastDataMs > DATA_TIMEOUT)
+		{
+			log.warning("No OBD data for " + (now - sLastDataMs) / 1000 + "s → reconnect");
+			setMessage("長時間沒有資料，重新連線…");
+			commService.stop(); // → OFFLINE → retry
+		}
+	}
+
+	/* ======================= settings ======================= */
+
+	private CommService.MEDIUM getMedium()
+	{
+		int idx = getPrefsInt(PREF_COMM_MEDIUM, 0);
+		// USB support was removed — anything else than NETWORK means Bluetooth
+		return idx == CommService.MEDIUM.NETWORK.ordinal()
+			? CommService.MEDIUM.NETWORK : CommService.MEDIUM.BLUETOOTH;
+	}
+
+	/** Apply ELM protocol related settings (formerly done by MainActivity) */
+	private void applyElmSettings(String key)
+	{
+		try
+		{
+			if (key == null || PREF_ADAPTIVE_TIMING.equals(key))
+			{
+				CommService.elm.mAdaptiveTiming.setMode(ElmProt.AdaptTimingMode.valueOf(
+					prefs.getString(PREF_ADAPTIVE_TIMING, ElmProt.AdaptTimingMode.OFF.toString())));
+			}
+			if (key == null || PREF_CUSTOM_INIT.equals(key))
+			{
+				String value = prefs.getString(PREF_CUSTOM_INIT, null);
+				if (value != null && !value.trim().isEmpty())
+				{
+					CommService.elm.setCustomInitCommands(value.split("\n"));
+				}
+			}
+			if (key == null || PREF_PROTOCOL.equals(key))
+			{
+				ElmProt.setPreferredProtocol(getPrefsInt(PREF_PROTOCOL, 0));
+			}
+			if (key == null || PREF_MEASURE_SYSTEM.equals(key))
+			{
+				EcuDataItem.cnvSystem = getPrefsInt(PREF_MEASURE_SYSTEM, EcuDataItem.SYSTEM_METRIC);
+			}
+		}
+		catch (Exception e)
+		{
+			log.log(Level.WARNING, "Applying ELM settings failed", e);
+		}
+	}
+
+	private int getPrefsInt(String key, int defaultValue)
+	{
+		try
+		{
+			return Integer.parseInt(prefs.getString(key, String.valueOf(defaultValue)).trim());
+		}
+		catch (Exception e)
+		{
+			return defaultValue;
+		}
+	}
+
+	/* ======================= wake lock / notification ======================= */
+
+	/**
+	 * Keep the CPU running so reconnect timers and polling keep working while the
+	 * screen is off (Handler delays stop in deep sleep → "sometimes no auto-connect").
+	 */
+	private void updateWakeLock()
+	{
+		if (prefs.getBoolean(PREF_KEEP_AWAKE, true))
+		{
+			if (wakeLock == null)
+			{
+				PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+				wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AndrOBD:obd");
+				wakeLock.setReferenceCounted(false);
+			}
+			if (!wakeLock.isHeld()) wakeLock.acquire();
+		}
+		else
+		{
+			releaseWakeLock();
+		}
+	}
+
+	private void releaseWakeLock()
+	{
+		if (wakeLock != null && wakeLock.isHeld())
+		{
+			wakeLock.release();
+		}
+	}
+
+	private void setMessage(String message)
+	{
+		sMessage = message;
+		NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+		if (manager != null && !stopping)
+		{
+			manager.notify(NOTIFICATION_ID, createNotification(message));
+		}
+	}
+
+	private void startInForeground(String text)
+	{
+		Notification notification = createNotification(text);
+		try
+		{
+			boolean hasBtPermission = Build.VERSION.SDK_INT < 31
+				|| ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
+				== PackageManager.PERMISSION_GRANTED;
+			if (Build.VERSION.SDK_INT >= 29 && hasBtPermission)
+			{
+				startForeground(NOTIFICATION_ID, notification,
+					android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
+			}
+			else
+			{
+				startForeground(NOTIFICATION_ID, notification);
+			}
+		}
+		catch (Exception e)
+		{
+			log.log(Level.SEVERE, "startForeground failed", e);
+			try { startForeground(NOTIFICATION_ID, notification); } catch (Exception ignored) { }
+		}
+	}
+
+	private void createNotificationChannel()
+	{
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+		{
+			NotificationChannel channel = new NotificationChannel(
+				CHANNEL_ID, "OBD Service", NotificationManager.IMPORTANCE_LOW);
+			channel.setDescription("OBD → Home Assistant");
+			channel.setShowBadge(false);
+			NotificationManager manager = getSystemService(NotificationManager.class);
+			if (manager != null) manager.createNotificationChannel(channel);
+		}
+	}
+
+	private Notification createNotification(String text)
+	{
+		Intent open = new Intent(this, MainActivity.class);
+		PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, open,
+			Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0);
+		return new NotificationCompat.Builder(this, CHANNEL_ID)
+			.setContentTitle("AndrOBD → Home Assistant")
+			.setContentText(text)
+			.setSmallIcon(R.mipmap.ic_launcher)
+			.setContentIntent(pendingIntent)
+			.setOngoing(true)
+			.setOnlyAlertOnce(true)
+			.setPriority(NotificationCompat.PRIORITY_LOW)
+			.build();
+	}
 }

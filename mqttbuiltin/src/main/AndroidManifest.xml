@@ -6,28 +6,11 @@
 
     <application android:usesCleartextTraffic="true">
 
-        <!-- Plugin discovery: host broadcasts IDENTIFY, this receiver responds
-             in-process (same APK) so the MQTT plugin is built-in, no install. -->
-        <receiver
-            android:name="com.fr3ts0n.androbd.plugin.mqtt.PluginReceiver"
-            android:exported="true"
-            android:enabled="true">
-            <intent-filter>
-                <action android:name="com.fr3ts0n.androbd.plugin.IDENTIFY" />
-                <category android:name="com.fr3ts0n.androbd.plugin.REQUEST" />
-            </intent-filter>
-        </receiver>
-
-        <service
-            android:name="com.fr3ts0n.androbd.plugin.mqtt.MqttPlugin"
-            android:exported="true"
-            android:enabled="true"/>
-
-        <!-- Config screen — launched by the plugin "configure" action, NOT a
-             separate launcher icon (LAUNCHER intent-filter removed on bundling). -->
+        <!-- MQTT / Home Assistant settings, opened from the main screen -->
         <activity
             android:name="com.fr3ts0n.androbd.plugin.mqtt.SettingsActivity"
-            android:exported="true"/>
+            android:label="@string/mqtt_settings"
+            android:exported="false"/>
 
     </application>
 

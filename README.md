@@ -1,5 +1,16 @@
 ![AndrOBD](fastlane/metadata/android/en-US/images/tvBanner.png)
 
+> **此 fork 為精簡版：只做「連線 OBD 裝置 → 資料送到 Home Assistant (MQTT)」。**
+>
+> - 所有工作都在前景服務 `ObdBackgroundService` 內完成：連線 → ELM 初始化 → 偵測 ECU →
+>   自動開始讀取即時資料（Service 01，含里程 `odometer_reading` 等）→ 依 MQTT 設定發佈。
+>   不需要打開任何資料頁面，App 畫面關掉也照常運作。
+> - 斷線／連不上會無限次自動重試（3s→30s 退避），藍牙開啟、開機、App 更新後都會自動啟動。
+>   連線卡住或連上但 3 分鐘沒資料會自動重連。
+> - MQTT topic：`<prefix><mnemonic>`（例如 `AndrOBD/odometer_reading`），
+>   連線狀態 `<prefix>status` = `online` / `offline`（retained，可做 HA availability）。
+> - 已移除：圖表、儀表板、故障碼、匯出、Demo、USB、外掛框架。
+
 AndrOBD allows your Android device to connect to your car's on-board diagnostics system via any ELM327 compatible OBD adapter, display various information & perform operations.
 It is open source and completely free. The application also has a built in Demo mode that simulates live data, so you don't require an adapter to test it.
 
