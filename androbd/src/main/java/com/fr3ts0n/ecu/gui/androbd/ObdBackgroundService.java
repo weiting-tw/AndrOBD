@@ -658,19 +658,45 @@ public class ObdBackgroundService extends Service
 				dataItemsSeen = false;
 				// THE missing step: start reading live data (service 01) right away,
 				// no UI needed. Includes odometer / distance PIDs if the car supports them.
-				if (CommService.elm.getService() != ObdProt.OBD_SVC_DATA)
-				{
-					log.info("ECU detected → start OBD data polling");
-					logEvent("偵測到 ECU → 開始讀取 OBD 資料");
-					CommService.elm.setService(ObdProt.OBD_SVC_DATA, true);
-				}
-				if (mqtt != null)
-				{
-					mqtt.resetChangeTracking();
-					mqtt.publishStatus("online");
-				}
+				startDataPolling("偵測到 ECU → 開始讀取 OBD 資料");
+			}
+			else
+			{
+				// Some adapters never reach ECU detection (init ends in another state)
+				// and the ELM then sits idle. Once the status has been stable for a few
+				// seconds without data polling, start it anyway — this is what opening
+				// the "OBD data" page did in the old app.
+				handler.removeCallbacks(dataStartFallback);
+				handler.postDelayed(dataStartFallback, DATA_START_FALLBACK_DELAY);
 			}
 			setMessage("已連線 " + (sDeviceName != null ? sDeviceName : "") + " — " + status);
+		}
+	}
+
+	private static final long DATA_START_FALLBACK_DELAY = 5000;
+
+	private final Runnable dataStartFallback = () -> {
+		if (stopping || sConnState != CommService.STATE.CONNECTED) return;
+		if (CommService.elm.getService() != ObdProt.OBD_SVC_NONE) return;
+		ElmProt.STAT st = CommService.elm.getStatus();
+		if (st == ElmProt.STAT.INITIALIZING || st == ElmProt.STAT.ECU_DETECT
+			|| st == ElmProt.STAT.CONNECTING) return; // still busy, a later status change re-arms us
+		startDataPolling("ELM 未進入 ECU 偵測（" + st + "）→ 直接開始讀取 OBD 資料");
+	};
+
+	private void startDataPolling(String reason)
+	{
+		handler.removeCallbacks(dataStartFallback);
+		if (CommService.elm.getService() != ObdProt.OBD_SVC_DATA)
+		{
+			log.info(reason);
+			logEvent(reason);
+			CommService.elm.setService(ObdProt.OBD_SVC_DATA, true);
+		}
+		if (mqtt != null)
+		{
+			mqtt.resetChangeTracking();
+			mqtt.publishStatus("online");
 		}
 	}
 

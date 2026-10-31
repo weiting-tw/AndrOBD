@@ -904,8 +904,14 @@ public class ElmProt
 				}
 				
 				// we are connected ...
-				setStatus(STAT.CONNECTED);
-				
+				// ... but don't let an unexpected answer during initialisation (e.g. from
+				// a clone adapter / custom init command) overwrite INITIALIZING, otherwise
+				// the end of the init queue is never detected and ECU detection never starts
+				if (status != STAT.INITIALIZING)
+				{
+					setStatus(STAT.CONNECTED);
+				}
+
 				// ELM clone verbose message (starting with '+')
 				if(buffer[0] == '+')
 				{
