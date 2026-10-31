@@ -101,6 +101,11 @@ public class ObdBackgroundService extends Service
 	public static final String PREF_ADAPTIVE_TIMING = "adaptive_timing_mode";
 	public static final String PREF_CUSTOM_INIT = "elm_custom_init_cmds";
 	public static final String PREF_MEASURE_SYSTEM = "measure_system";
+	/* ELM settings of the former full app — no longer editable, but still applied */
+	public static final String PREF_ELM_CMD_DISABLE = "elm_cmd_disable";
+	public static final String PREF_ELM_RESET_ON_NRC = "elm_reset_on_nrc";
+	public static final String PREF_ELM_MIN_TIMEOUT = "elm_min_timeout";
+	public static final String PREF_DATA_DISABLE_MAX = "data_disable_max";
 
 	private static final String CHANNEL_ID = "obd_service_channel";
 	private static final int NOTIFICATION_ID = 1001;
@@ -110,7 +115,7 @@ public class ObdBackgroundService extends Service
 	/** A connect attempt that did not finish within this time is aborted */
 	private static final long CONNECT_TIMEOUT = 30000;
 	/** Connected, but no OBD data for this long → drop the link and reconnect */
-	private static final long DATA_TIMEOUT = 180000;
+	private static final long DATA_TIMEOUT = 60000;
 	private static final long WATCHDOG_PERIOD = 15000;
 	/** Data older than this is not published (prevents re-sending stale values) */
 	private static final long DATA_FRESHNESS = 120000;
@@ -122,6 +127,60 @@ public class ObdBackgroundService extends Service
 	private static volatile String sMessage = "";
 	private static volatile long sLastDataMs = 0L;
 	private static volatile String sDeviceName = null;
+
+	/** Recent events (newest last) shown on the status screen for troubleshooting */
+	private static final java.util.LinkedList<String> sEvents = new java.util.LinkedList<>();
+	private static final int MAX_EVENTS = 40;
+
+	private static final String PREF_EVENT_LOG = "event_log";
+	/** app context to persist the event log (survives process restarts / reboots) */
+	private static volatile Context sAppContext;
+	private static boolean sEventsLoaded = false;
+
+	static void initEventLog(Context context)
+	{
+		sAppContext = context.getApplicationContext();
+		synchronized (sEvents)
+		{
+			if (sEventsLoaded) return;
+			sEventsLoaded = true;
+			String saved = PreferenceManager.getDefaultSharedPreferences(sAppContext)
+				.getString(PREF_EVENT_LOG, "");
+			List<String> previous = new ArrayList<>();
+			for (String line : saved.split("\n")) if (!line.isEmpty()) previous.add(line);
+			sEvents.addAll(0, previous);
+			while (sEvents.size() > MAX_EVENTS) sEvents.removeFirst();
+		}
+	}
+
+	static void logEvent(String text)
+	{
+		String line = android.text.format.DateFormat.format("MM-dd HH:mm:ss", System.currentTimeMillis()) + "  " + text;
+		String joined;
+		synchronized (sEvents)
+		{
+			if (!sEvents.isEmpty() && sEvents.getLast().endsWith("  " + text)) return; // skip repeats
+			sEvents.add(line);
+			while (sEvents.size() > MAX_EVENTS) sEvents.removeFirst();
+			joined = android.text.TextUtils.join("\n", sEvents);
+		}
+		Context ctx = sAppContext;
+		if (ctx != null)
+		{
+			PreferenceManager.getDefaultSharedPreferences(ctx).edit().putString(PREF_EVENT_LOG, joined).apply();
+		}
+	}
+
+	/** @return recent events, newest first */
+	public static List<String> getEvents()
+	{
+		synchronized (sEvents)
+		{
+			List<String> result = new ArrayList<>(sEvents);
+			Collections.reverse(result);
+			return result;
+		}
+	}
 
 	public static boolean isRunning() { return sRunning; }
 
@@ -161,6 +220,13 @@ public class ObdBackgroundService extends Service
 
 	/** true while a (re)connect is scheduled — avoids stacking retries */
 	private boolean connectPending = false;
+	/** ECU RX filter set for this connection (0 = none) */
+	private int ecuFilter = 0;
+	/** time ECU detection finished (0 = not yet) */
+	private long ecuDetectedMs = 0L;
+	/** OBD data items were reported by the vehicle since ECU detection */
+	private volatile boolean dataItemsSeen = false;
+
 	private final Runnable connectRunnable = () -> {
 		connectPending = false;
 		connect();
@@ -218,6 +284,8 @@ public class ObdBackgroundService extends Service
 		public void pvChanged(PvChangeEvent event)
 		{
 			if ((event.getType() & PvChangeEvent.PV_ADDED) == 0) return;
+			dataItemsSeen = true;
+			sLastDataMs = System.currentTimeMillis();
 			Object value = event.getValue();
 			if (value instanceof Object[])
 			{
@@ -239,6 +307,58 @@ public class ObdBackgroundService extends Service
 	};
 
 	/** Bluetooth switched on → connect right away */
+	/**
+	 * Head units usually go to standby instead of shutting down, so there is no
+	 * BOOT_COMPLETED when the car starts. Screen on / unlock / the adapter's BT
+	 * link coming up are the signals that the car is back: connect right away
+	 * (and drop a link that silently died during standby).
+	 */
+	private final BroadcastReceiver wakeReceiver = new BroadcastReceiver()
+	{
+		@Override
+		public void onReceive(Context context, Intent intent)
+		{
+			String action = intent.getAction();
+			if (BluetoothDevice.ACTION_ACL_CONNECTED.equals(action))
+			{
+				BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+				String saved = prefs.getString(PREF_DEVICE_ADDRESS, null);
+				if (device == null || saved == null || !saved.equalsIgnoreCase(device.getAddress())) return;
+				kick("OBD 裝置藍牙已連上");
+			}
+			else
+			{
+				kick(Intent.ACTION_SCREEN_ON.equals(action) ? "螢幕開啟" : "使用者解鎖");
+			}
+		}
+	};
+
+	/** Something suggests the car is (back) on: make sure we are connected and data flows */
+	private void kick(String reason)
+	{
+		if (stopping || commService == null) return;
+		CommService.STATE state = commService.getState();
+		if (state == CommService.STATE.CONNECTED)
+		{
+			long now = System.currentTimeMillis();
+			// Our own socket connect also triggers ACL_CONNECTED, and the worker thread
+			// reports CONNECTED before the data timestamp is refreshed on this thread.
+			// Never drop a link we opened less than a minute ago (ELM init + ECU
+			// detection take a while) — v20 killed fresh connections this way.
+			if (now - connectStartMs > 60000 && now - sLastDataMs > 20000)
+			{
+				logEvent(reason + " → 連線沒有資料，重新連線");
+				commService.stop(); // → OFFLINE → retry
+			}
+		}
+		else if (state != CommService.STATE.CONNECTING)
+		{
+			logEvent(reason + " → 立即連線");
+			retryCount = 0;
+			scheduleConnect(1000);
+		}
+	}
+
 	private final BroadcastReceiver btStateReceiver = new BroadcastReceiver()
 	{
 		@Override
@@ -289,6 +409,8 @@ public class ObdBackgroundService extends Service
 	{
 		super.onCreate();
 		prefs = PreferenceManager.getDefaultSharedPreferences(this);
+		initEventLog(this);
+		logEvent("背景服務啟動");
 		createNotificationChannel();
 		startInForeground("啟動中…");
 
@@ -297,6 +419,10 @@ public class ObdBackgroundService extends Service
 		ObdProt.PidPvs.addPvChangeListener(dataListener, PvChangeEvent.PV_ADDED);
 		prefs.registerOnSharedPreferenceChangeListener(prefListener);
 		registerReceiver(btStateReceiver, new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED));
+		IntentFilter wakeFilter = new IntentFilter(Intent.ACTION_SCREEN_ON);
+		wakeFilter.addAction(Intent.ACTION_USER_PRESENT);
+		wakeFilter.addAction(BluetoothDevice.ACTION_ACL_CONNECTED);
+		registerReceiver(wakeReceiver, wakeFilter);
 
 		mqtt = MqttPublisher.get(this);
 		mqtt.start(this::snapshot);
@@ -361,6 +487,7 @@ public class ObdBackgroundService extends Service
 		stopping = true;
 		handler.removeCallbacksAndMessages(null);
 		try { unregisterReceiver(btStateReceiver); } catch (Exception ignored) { }
+		try { unregisterReceiver(wakeReceiver); } catch (Exception ignored) { }
 		prefs.unregisterOnSharedPreferenceChangeListener(prefListener);
 		if (mqtt != null)
 		{
@@ -490,8 +617,14 @@ public class ObdBackgroundService extends Service
 			String address = prefs.getString(PREF_DEVICE_ADDRESS, null);
 			if (address == null || !BluetoothAdapter.checkBluetoothAddress(address))
 			{
-				setMessage("尚未選擇 OBD 裝置");
-				return;
+				// nothing selected yet → try to find the OBD adapter among paired devices
+				address = autoSelectDevice(this);
+				if (address == null)
+				{
+					setMessage("找不到已配對的 OBD 裝置，請先在系統藍牙配對，或按「選擇 OBD 藍牙裝置」");
+					scheduleConnect(RETRY_DELAYS[RETRY_DELAYS.length - 1]); // maybe it gets paired later
+					return;
+				}
 			}
 			BluetoothDevice device = adapter.getRemoteDevice(address);
 			String name = prefs.getString(PREF_DEVICE_NAME, address);
@@ -511,6 +644,7 @@ public class ObdBackgroundService extends Service
 		CommService.STATE previous = sConnState;
 		sConnState = state;
 		log.info("Connection state " + previous + " -> " + state);
+		logEvent("連線狀態 " + previous + " → " + state);
 		switch (state)
 		{
 			case CONNECTED:
@@ -518,9 +652,16 @@ public class ObdBackgroundService extends Service
 				connectPending = false;
 				retryCount = 0;
 				sLastDataMs = System.currentTimeMillis(); // grace period for the watchdog
+				ecuFilter = 0;
+				ecuDetectedMs = 0;
+				dataItemsSeen = false;
 				setMessage("已連線，初始化 ELM…");
 				// reset + init the ELM adapter → ECU detection → (elmListener) start data polling
+				elmResponded = false;
+				elmResetAttempts = 0;
 				CommService.elm.reset();
+				handler.removeCallbacks(elmInitWatchdog);
+				handler.postDelayed(elmInitWatchdog, ELM_INIT_TIMEOUT);
 				break;
 
 			case CONNECTING:
@@ -541,6 +682,50 @@ public class ObdBackgroundService extends Service
 		}
 	}
 
+	/** Name fragments of common ELM327 / OBD adapters (upper case) */
+	private static final String[] OBD_NAME_HINTS = {
+		"OBD", "ELM", "V-LINK", "VLINK", "VGATE", "ICAR", "VEEPEAK", "KONNWEI",
+		"KW9", "CARISTA"
+	};
+
+	/**
+	 * Find the OBD adapter among the paired Bluetooth devices by name and remember it.
+	 * @return address of the selected device, or null if none looks like an OBD adapter
+	 */
+	@android.annotation.SuppressLint("MissingPermission")
+	static String autoSelectDevice(Context context)
+	{
+		try
+		{
+			BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+			if (adapter == null || !adapter.isEnabled()) return null;
+			if (Build.VERSION.SDK_INT >= 31
+				&& ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT)
+				!= PackageManager.PERMISSION_GRANTED) return null;
+			for (String hint : OBD_NAME_HINTS) // ordered by how specific the hint is
+			{
+				for (BluetoothDevice device : adapter.getBondedDevices())
+				{
+					String name = device.getName();
+					if (name != null && name.toUpperCase(java.util.Locale.ROOT).contains(hint))
+					{
+						PreferenceManager.getDefaultSharedPreferences(context).edit()
+							.putString(PREF_DEVICE_ADDRESS, device.getAddress())
+							.putString(PREF_DEVICE_NAME, name)
+							.apply();
+						logEvent("自動選擇 OBD 裝置：" + name + " (" + device.getAddress() + ")");
+						return device.getAddress();
+					}
+				}
+			}
+		}
+		catch (Exception e)
+		{
+			log.log(Level.WARNING, "auto select device failed", e);
+		}
+		return null;
+	}
+
 	/* ======================= ELM / OBD ======================= */
 
 	@SuppressWarnings("unchecked")
@@ -555,24 +740,84 @@ public class ObdBackgroundService extends Service
 		{
 			ElmProt.STAT status = (ElmProt.STAT) evt.getNewValue();
 			sElmStatus = status;
+			logEvent("ELM 狀態 → " + status);
+			elmResponded = true;
+			handler.removeCallbacks(elmInitWatchdog);
 			if (sConnState != CommService.STATE.CONNECTED) return;
 
 			if (status == ElmProt.STAT.ECU_DETECTED)
 			{
+				ecuDetectedMs = System.currentTimeMillis();
+				dataItemsSeen = false;
 				// THE missing step: start reading live data (service 01) right away,
 				// no UI needed. Includes odometer / distance PIDs if the car supports them.
-				if (CommService.elm.getService() != ObdProt.OBD_SVC_DATA)
-				{
-					log.info("ECU detected → start OBD data polling");
-					CommService.elm.setService(ObdProt.OBD_SVC_DATA, true);
-				}
-				if (mqtt != null)
-				{
-					mqtt.resetChangeTracking();
-					mqtt.publishStatus("online");
-				}
+				startDataPolling("偵測到 ECU → 開始讀取 OBD 資料");
+			}
+			else
+			{
+				// Some adapters never reach ECU detection (init ends in another state)
+				// and the ELM then sits idle. Once the status has been stable for a few
+				// seconds without data polling, start it anyway — this is what opening
+				// the "OBD data" page did in the old app.
+				handler.removeCallbacks(dataStartFallback);
+				handler.postDelayed(dataStartFallback, DATA_START_FALLBACK_DELAY);
 			}
 			setMessage("已連線 " + (sDeviceName != null ? sDeviceName : "") + " — " + status);
+		}
+	}
+
+	private static final long DATA_START_FALLBACK_DELAY = 5000;
+
+	/** ELM must react to the reset within this time */
+	private static final long ELM_INIT_TIMEOUT = 5000;
+	private static final int MAX_ELM_RESETS = 2;
+	/** ELM sent any status change since the connection was established */
+	private volatile boolean elmResponded = false;
+	private int elmResetAttempts = 0;
+
+	/**
+	 * Right after the BT link comes up some adapters (e.g. V-Link) swallow the first
+	 * reset; ElmProt then waits forever for an answer. Re-send the reset, and if the
+	 * adapter still doesn't answer, drop the link and reconnect.
+	 */
+	private final Runnable elmInitWatchdog = () -> {
+		if (stopping || sConnState != CommService.STATE.CONNECTED || elmResponded) return;
+		if (elmResetAttempts < MAX_ELM_RESETS)
+		{
+			elmResetAttempts++;
+			logEvent("ELM 沒有回應 → 重送重置（第 " + elmResetAttempts + " 次）");
+			CommService.elm.reset();
+			handler.postDelayed(this.elmInitWatchdog, ELM_INIT_TIMEOUT);
+		}
+		else if (commService != null)
+		{
+			logEvent("ELM 仍沒有回應 → 重新連線");
+			commService.stop(); // → OFFLINE → retry
+		}
+	};
+
+	private final Runnable dataStartFallback = () -> {
+		if (stopping || sConnState != CommService.STATE.CONNECTED) return;
+		if (CommService.elm.getService() != ObdProt.OBD_SVC_NONE) return;
+		ElmProt.STAT st = CommService.elm.getStatus();
+		if (st == ElmProt.STAT.INITIALIZING || st == ElmProt.STAT.ECU_DETECT
+			|| st == ElmProt.STAT.CONNECTING) return; // still busy, a later status change re-arms us
+		startDataPolling("ELM 未進入 ECU 偵測（" + st + "）→ 直接開始讀取 OBD 資料");
+	};
+
+	private void startDataPolling(String reason)
+	{
+		handler.removeCallbacks(dataStartFallback);
+		if (CommService.elm.getService() != ObdProt.OBD_SVC_DATA)
+		{
+			log.info(reason);
+			logEvent(reason);
+			CommService.elm.setService(ObdProt.OBD_SVC_DATA, true);
+		}
+		if (mqtt != null)
+		{
+			mqtt.resetChangeTracking();
+			mqtt.publishStatus("online");
 		}
 	}
 
@@ -582,11 +827,26 @@ public class ObdBackgroundService extends Service
 	 */
 	private void selectEcu(Set<Integer> addresses)
 	{
-		if (addresses == null || addresses.size() <= 1) return;
+		ecuFilter = 0;
+		StringBuilder list = new StringBuilder();
+		for (Integer a : addresses) list.append(String.format(" 0x%X", a));
+		logEvent("偵測到 " + addresses.size() + " 個 ECU:" + list);
+		if (addresses.isEmpty())
+		{
+			logEvent("車輛沒有回應 — 請確認引擎已發動 / 電門 ON");
+			return;
+		}
+		if (addresses.size() <= 1) return;
+		// Only filter on an ECU the user explicitly picked earlier. Without a filter
+		// all ECUs answer (functional addressing), which always works; a wrong filter
+		// would block every response ("NO DATA" forever).
 		int preferred = prefs.getInt(PREF_ECU_ADDRESS, 0);
-		int address = addresses.contains(preferred) ? preferred : Collections.min(addresses);
-		log.info(String.format("ECUs %s → using 0x%X", addresses, address));
-		CommService.elm.setEcuAddress(address);
+		if (preferred != 0 && addresses.contains(preferred))
+		{
+			ecuFilter = preferred;
+			logEvent(String.format("使用先前選擇的 ECU 0x%X", preferred));
+			CommService.elm.setEcuAddress(preferred);
+		}
 	}
 
 	/** Snapshot of current OBD values for MQTT (called on the MQTT thread) */
@@ -657,9 +917,21 @@ public class ObdBackgroundService extends Service
 		if (state == CommService.STATE.CONNECTING && now - connectStartMs > CONNECT_TIMEOUT)
 		{
 			log.warning("Connect timeout → abort and retry");
+			logEvent("連線逾時 → 中斷並重試");
 			commService.stop(); // → OFFLINE → retry
 		}
-		else if (state == CommService.STATE.CONNECTED && now - sLastDataMs > DATA_TIMEOUT)
+		else if (state == CommService.STATE.CONNECTED && ecuFilter != 0 && ecuDetectedMs > 0
+			&& !dataItemsSeen && now - ecuDetectedMs > 30000)
+		{
+			// the remembered ECU filter blocks all answers → forget it, reconnect unfiltered
+			logEvent(String.format("ECU 0x%X 沒有回應資料 → 取消 ECU 篩選並重新連線", ecuFilter));
+			prefs.edit().remove(PREF_ECU_ADDRESS).apply();
+			ecuFilter = 0;
+			ecuDetectedMs = 0;
+			commService.stop(); // → OFFLINE → retry
+		}
+		else if (state == CommService.STATE.CONNECTED && now - sLastDataMs > DATA_TIMEOUT
+			&& now - connectStartMs > DATA_TIMEOUT)
 		{
 			log.warning("No OBD data for " + (now - sLastDataMs) / 1000 + "s → reconnect");
 			setMessage("長時間沒有資料，重新連線…");
@@ -698,6 +970,29 @@ public class ObdBackgroundService extends Service
 			if (key == null || PREF_PROTOCOL.equals(key))
 			{
 				ElmProt.setPreferredProtocol(getPrefsInt(PREF_PROTOCOL, 0));
+			}
+			if (key == null || PREF_ELM_CMD_DISABLE.equals(key))
+			{
+				// commands the user disabled in the old app (e.g. for clone adapters)
+				Set<String> disabled = prefs.getStringSet(PREF_ELM_CMD_DISABLE, null);
+				ElmProt.disableCommands(disabled);
+				if (key == null && disabled != null && !disabled.isEmpty())
+				{
+					logEvent("已停用 ELM 指令：" + disabled);
+				}
+			}
+			if (key == null || PREF_ELM_RESET_ON_NRC.equals(key))
+			{
+				CommService.elm.setResetOnNrc(prefs.getBoolean(PREF_ELM_RESET_ON_NRC, false));
+			}
+			if (key == null || PREF_ELM_MIN_TIMEOUT.equals(key))
+			{
+				CommService.elm.mAdaptiveTiming.setElmTimeoutMin(getPrefsInt(PREF_ELM_MIN_TIMEOUT,
+					CommService.elm.mAdaptiveTiming.getElmTimeoutMin()));
+			}
+			if (key == null || PREF_DATA_DISABLE_MAX.equals(key))
+			{
+				EcuDataItem.MAX_ERROR_COUNT = getPrefsInt(PREF_DATA_DISABLE_MAX, 3);
 			}
 			if (key == null || PREF_MEASURE_SYSTEM.equals(key))
 			{
@@ -757,6 +1052,7 @@ public class ObdBackgroundService extends Service
 	private void setMessage(String message)
 	{
 		sMessage = message;
+		logEvent(message);
 		NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
 		if (manager != null && !stopping)
 		{

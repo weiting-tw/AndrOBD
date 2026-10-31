@@ -65,6 +65,7 @@ public class MainActivity extends Activity
 	private TextView statusTitle;
 	private TextView statusDetails;
 	private TextView valuesView;
+	private TextView eventsView;
 	private Button batteryButton;
 	private final Handler handler = new Handler(Looper.getMainLooper());
 
@@ -85,10 +86,12 @@ public class MainActivity extends Activity
 		setContentView(R.layout.activity_main);
 		setTitle(getString(R.string.app_name) + " " + getString(R.string.app_version));
 		prefs = PreferenceManager.getDefaultSharedPreferences(this);
+		ObdBackgroundService.initEventLog(this);
 
 		statusTitle = findViewById(R.id.status_title);
 		statusDetails = findViewById(R.id.status_details);
 		valuesView = findViewById(R.id.values);
+		eventsView = findViewById(R.id.events);
 		batteryButton = findViewById(R.id.btn_battery);
 
 		findViewById(R.id.btn_select_device).setOnClickListener(v -> selectDevice());
@@ -180,8 +183,11 @@ public class MainActivity extends Activity
 			}
 			catch (Exception ignored) { }
 		}
-		if (isBluetoothMedium() && prefs.getString(ObdBackgroundService.PREF_DEVICE_ADDRESS, null) == null)
+		if (isBluetoothMedium()
+			&& prefs.getString(ObdBackgroundService.PREF_DEVICE_ADDRESS, null) == null
+			&& ObdBackgroundService.autoSelectDevice(this) == null)
 		{
+			// no paired device looks like an OBD adapter → let the user pick (only once)
 			selectDevice();
 		}
 		// (re)start the background service — this is what keeps everything running
@@ -320,6 +326,13 @@ public class MainActivity extends Activity
 			values.append(entry.getKey()).append(": ").append(entry.getValue()).append('\n');
 		}
 		valuesView.setText(values.length() > 0 ? values : "（尚無資料）");
+
+		StringBuilder events = new StringBuilder();
+		for (String line : ObdBackgroundService.getEvents())
+		{
+			events.append(line).append('\n');
+		}
+		eventsView.setText(events.length() > 0 ? events : "（無）");
 	}
 
 	private String formatTime(long ms)

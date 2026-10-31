@@ -3,13 +3,22 @@ name: Android CI/CD
 on:
   push:
     branches: [ master, main ]
+    # version tags (e.g. V2.6.16-API34-v15-simple) build the APK and publish a GitHub release
+    tags: [ 'V*' ]
   pull_request:
     branches: [ master, main ]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Create this tag + GitHub release with the APK (e.g. V2.6.16-API34-v15-simple). Empty = build only.'
+        required: false
+        default: ''
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to create the release on tag builds
 
     steps:
     - name: Checkout Code
@@ -50,10 +59,13 @@ jobs:
       if: always()
       run: rm -f weiting-car.jks
 
-    - name: Release APK (on tags)
-      if: startsWith(github.ref, 'refs/tags/')
+    - name: Release APK (on tags / manual release_tag)
+      if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
       uses: softprops/action-gh-release@v2
       with:
+        tag_name: ${{ inputs.release_tag || github.ref_name }}
+        target_commitish: ${{ github.sha }}
+        name: AndrOBD ${{ inputs.release_tag || github.ref_name }}
         files: androbd/build/outputs/apk/debug/*.apk
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

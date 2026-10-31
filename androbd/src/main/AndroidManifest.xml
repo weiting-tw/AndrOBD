@@ -29,7 +29,7 @@
         android:theme="@style/AppTheme.Dark">
         <activity
             android:name=".MainActivity"
-            android:configChanges="keyboardHidden|orientation|screenSize"
+            android:configChanges="keyboardHidden"
             android:launchMode="singleTop"
             android:exported="true">
             <intent-filter>
