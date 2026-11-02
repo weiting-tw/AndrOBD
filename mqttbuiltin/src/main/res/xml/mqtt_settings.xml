@@ -28,6 +28,12 @@
             android:summary="@string/heartbeat_period_sum"
             android:title="@string/heartbeat_period"/>
 
+        <CheckBoxPreference
+            android:defaultValue="true"
+            android:key="mqtt_log_enabled"
+            android:summary="@string/mqtt_log_sum"
+            android:title="@string/mqtt_log" />
+
         <EditTextPreference
             android:defaultValue="AndrOBD/"
             android:key="mqtt_prefix"

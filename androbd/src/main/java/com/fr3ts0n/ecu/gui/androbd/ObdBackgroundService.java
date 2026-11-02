@@ -155,7 +155,8 @@ public class ObdBackgroundService extends Service
 
 	static void logEvent(String text)
 	{
-		String line = android.text.format.DateFormat.format("MM-dd HH:mm:ss", System.currentTimeMillis()) + "  " + text;
+		long nowMs = System.currentTimeMillis();
+		String line = android.text.format.DateFormat.format("MM-dd HH:mm:ss", nowMs) + "  " + text;
 		String joined;
 		synchronized (sEvents)
 		{
@@ -168,6 +169,8 @@ public class ObdBackgroundService extends Service
 		if (ctx != null)
 		{
 			PreferenceManager.getDefaultSharedPreferences(ctx).edit().putString(PREF_EVENT_LOG, joined).apply();
+			// also to MQTT <prefix>log (queued while the broker is unreachable)
+			MqttPublisher.get(ctx).publishLog(nowMs, text);
 		}
 	}
 
@@ -947,8 +950,35 @@ public class ObdBackgroundService extends Service
 	/** ELM was already reset because of a bad state on this connection */
 	private boolean elmBadStateResetDone = false;
 
+	/** Publish the connection health as retained JSON on <prefix>health */
+	private void updateHealth()
+	{
+		if (mqtt == null) return;
+		try
+		{
+			org.json.JSONObject json = new org.json.JSONObject()
+				.put("connection", String.valueOf(sConnState))
+				.put("elm", String.valueOf(sElmStatus))
+				.put("receiving", sConnState == CommService.STATE.CONNECTED
+					&& System.currentTimeMillis() - sLastDataMs < 30000)
+				.put("last_data", sLastDataMs > 0
+					? new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", java.util.Locale.ROOT)
+						.format(new java.util.Date(sLastDataMs))
+					: org.json.JSONObject.NULL)
+				.put("message", sMessage)
+				.put("device", prefs.getString(PREF_DEVICE_NAME, ""))
+				.put("version", getString(R.string.app_version));
+			mqtt.setHealth(json.toString());
+		}
+		catch (Exception e)
+		{
+			log.log(Level.FINE, "health json failed", e);
+		}
+	}
+
 	private void checkHealth()
 	{
+		updateHealth();
 		if (stopping || commService == null) return;
 		long now = System.currentTimeMillis();
 		CommService.STATE state = commService.getState();

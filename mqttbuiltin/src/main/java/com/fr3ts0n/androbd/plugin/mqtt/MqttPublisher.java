@@ -49,6 +49,15 @@ public final class MqttPublisher implements SharedPreferences.OnSharedPreference
 
 	/** Topic (below prefix) carrying the OBD connection state: online / offline */
 	public static final String STATUS_TOPIC = "status";
+	/** Topic (below prefix) for event log entries: {"ts": ISO-8601, "msg": text} */
+	public static final String LOG_TOPIC = "log";
+	/** Topic (below prefix, retained) for the connection health JSON */
+	public static final String HEALTH_TOPIC = "health";
+	static final String MQTT_LOG_ENABLED = "mqtt_log_enabled";
+	/** log entries kept while the broker is unreachable */
+	private static final int MAX_PENDING_LOG = 200;
+	/** log entries sent per connection */
+	private static final int LOG_BATCH = 50;
 
 	/** Supplier of the current measurement snapshot (mnemonic -> value) */
 	public interface DataSource
@@ -92,6 +101,15 @@ public final class MqttPublisher implements SharedPreferences.OnSharedPreference
 	private int qos;
 	private Set<String> selectedItems = new HashSet<>();
 
+	// event log / health
+	private final java.util.concurrent.LinkedBlockingDeque<String> pendingLog =
+		new java.util.concurrent.LinkedBlockingDeque<>();
+	private boolean logFlushScheduled = false;
+	private volatile boolean logEnabled = true;
+	private volatile String healthJson = null;
+	private String lastHealthSent = null;
+	private long lastHealthMs = 0L;
+
 	// status for the UI
 	private volatile long lastPublishMs = 0L;
 	private volatile int lastPublishCount = 0;
@@ -119,6 +137,7 @@ public final class MqttPublisher implements SharedPreferences.OnSharedPreference
 			executor = Executors.newSingleThreadScheduledExecutor();
 		}
 		reschedule();
+		if (!pendingLog.isEmpty()) scheduleLogFlush();
 	}
 
 	/** Stop cyclic publishing */
@@ -168,6 +187,127 @@ public final class MqttPublisher implements SharedPreferences.OnSharedPreference
 		}
 	}
 
+	/**
+	 * Queue an event log entry for {@code <prefix>log}. Entries are batched and
+	 * kept (bounded) while the broker is unreachable, then sent in order.
+	 */
+	public void publishLog(long timeMs, String text)
+	{
+		if (!logEnabled) return;
+		String ts = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", java.util.Locale.ROOT)
+			.format(new java.util.Date(timeMs));
+		String json;
+		try
+		{
+			json = new org.json.JSONObject().put("ts", ts).put("msg", text).toString();
+		}
+		catch (org.json.JSONException e)
+		{
+			return;
+		}
+		pendingLog.addLast(json);
+		while (pendingLog.size() > MAX_PENDING_LOG) pendingLog.pollFirst();
+		scheduleLogFlush();
+	}
+
+	/** Set the retained health JSON; it is sent with the next publish cycle when changed */
+	public void setHealth(String json)
+	{
+		healthJson = json;
+	}
+
+	private synchronized void scheduleLogFlush()
+	{
+		if (executor == null || executor.isShutdown() || logFlushScheduled) return;
+		logFlushScheduled = true;
+		executor.schedule(() -> {
+			synchronized (MqttPublisher.this) { logFlushScheduled = false; }
+			flushLog();
+		}, 3, TimeUnit.SECONDS);
+	}
+
+	/** Send pending log entries (executor thread) */
+	private void flushLog()
+	{
+		while (!pendingLog.isEmpty())
+		{
+			java.util.List<String[]> batch = new java.util.ArrayList<>();
+			for (int i = 0; i < LOG_BATCH; i++)
+			{
+				String entry = pendingLog.pollFirst();
+				if (entry == null) break;
+				batch.add(new String[]{LOG_TOPIC, entry});
+			}
+			if (!sendRaw(batch, false))
+			{
+				// broker unreachable → put them back (oldest first) and retry later
+				for (int i = batch.size() - 1; i >= 0; i--) pendingLog.addFirst(batch.get(i)[1]);
+				while (pendingLog.size() > MAX_PENDING_LOG) pendingLog.pollFirst();
+				return;
+			}
+		}
+	}
+
+	/** Send the health JSON if it changed or the heartbeat is due (executor thread) */
+	private void publishHealth(long now)
+	{
+		String h = healthJson;
+		if (h == null) return;
+		boolean due = !h.equals(lastHealthSent)
+			|| now - lastHealthMs >= Math.max(60, heartbeatPeriod) * 1000L;
+		if (!due) return;
+		java.util.List<String[]> msg = new java.util.ArrayList<>();
+		msg.add(new String[]{HEALTH_TOPIC, h});
+		if (sendRaw(msg, true))
+		{
+			lastHealthSent = h;
+			lastHealthMs = now;
+		}
+	}
+
+	/**
+	 * Connect, publish the given (topic suffix, payload) pairs, disconnect.
+	 * No publish-on-change bookkeeping (used for log / health).
+	 */
+	private boolean sendRaw(java.util.List<String[]> messages, boolean retainFlag)
+	{
+		if (messages.isEmpty()) return true;
+		final String url = getBrokerUrl();
+		MqttClient client = null;
+		try
+		{
+			client = new MqttClient(url, clientId, new MemoryPersistence());
+			MqttConnectOptions options = new MqttConnectOptions();
+			options.setConnectionTimeout(15);
+			if (username != null && !username.trim().isEmpty())
+			{
+				options.setUserName(username);
+				options.setPassword(password == null ? new char[0] : password.toCharArray());
+			}
+			client.connect(options);
+			for (String[] m : messages)
+			{
+				client.publish(prefix + m[0], m[1].getBytes(java.nio.charset.StandardCharsets.UTF_8),
+					qos, retainFlag);
+			}
+			client.disconnect();
+			return true;
+		}
+		catch (MqttException e)
+		{
+			Log.w(TAG, "sendRaw failed: " + url + " " + e);
+			lastError = e.toString();
+			return false;
+		}
+		finally
+		{
+			if (client != null)
+			{
+				try { client.close(); } catch (Exception ignored) { }
+			}
+		}
+	}
+
 	/** Remember data item names so they can be selected in the MQTT settings */
 	public void addKnownItems(Collection<String> items)
 	{
@@ -200,12 +340,17 @@ public final class MqttPublisher implements SharedPreferences.OnSharedPreference
 	{
 		try
 		{
+			final long now = System.currentTimeMillis();
+			// health + pending log go out even when there is no OBD data —
+			// that is exactly when they are needed
+			publishHealth(now);
+			flushLog();
+
 			DataSource source = dataSource;
 			if (source == null) return;
 			Map<String, String> values = source.snapshot();
 			if (values == null || values.isEmpty()) return;
 
-			final long now = System.currentTimeMillis();
 			final boolean heartbeatDue = heartbeatPeriod > 0
 				&& (now - lastFullPublishMs) >= heartbeatPeriod * 1000L;
 
@@ -319,6 +464,7 @@ public final class MqttPublisher implements SharedPreferences.OnSharedPreference
 		qos = getPrefsInt(prefs, MQTT_QOS, 0);
 		retain = prefs.getBoolean(MQTT_RETAIN, true);
 		selectedItems = new HashSet<>(prefs.getStringSet(ITEMS_SELECTED, new HashSet<>()));
+		logEnabled = prefs.getBoolean(MQTT_LOG_ENABLED, true);
 	}
 
 	@Override
@@ -330,6 +476,7 @@ public final class MqttPublisher implements SharedPreferences.OnSharedPreference
 		{
 			// broker / topic settings changed -> resend everything
 			resetChangeTracking();
+			lastHealthSent = null; // resend health to the (possibly new) broker
 		}
 		if (oldPeriod != updatePeriod)
 		{
