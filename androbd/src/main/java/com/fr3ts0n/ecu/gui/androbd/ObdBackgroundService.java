@@ -130,7 +130,7 @@ public class ObdBackgroundService extends Service
 
 	/** Recent events (newest last) shown on the status screen for troubleshooting */
 	private static final java.util.LinkedList<String> sEvents = new java.util.LinkedList<>();
-	private static final int MAX_EVENTS = 40;
+	private static final int MAX_EVENTS = 100;
 
 	private static final String PREF_EVENT_LOG = "event_log";
 	/** app context to persist the event log (survives process restarts / reboots) */
@@ -263,13 +263,22 @@ public class ObdBackgroundService extends Service
 		}
 	};
 
-	/** A value of any OBD data item changed = the link is alive */
+	/**
+	 * A real measurement arrived = the link is alive.
+	 * Only numeric values received while the ELM reports CONNECTED count: on read
+	 * errors EcuDataItem sets the value to "n/a", which also modifies the PV and
+	 * used to keep the watchdog happy while the ELM was stuck in NO DATA / ERROR.
+	 */
 	private final PvChangeListener valueListener = new PvChangeListener()
 	{
 		@Override
 		public void pvChanged(PvChangeEvent event)
 		{
-			sLastDataMs = System.currentTimeMillis();
+			if (event.getValue() instanceof Number
+				&& CommService.elm.getStatus() == ElmProt.STAT.CONNECTED)
+			{
+				sLastDataMs = System.currentTimeMillis();
+			}
 		}
 	};
 
@@ -655,6 +664,8 @@ public class ObdBackgroundService extends Service
 				ecuFilter = 0;
 				ecuDetectedMs = 0;
 				dataItemsSeen = false;
+				elmBadStateResetDone = false;
+				elmStatusSinceMs = System.currentTimeMillis();
 				setMessage("已連線，初始化 ELM…");
 				// reset + init the ELM adapter → ECU detection → (elmListener) start data polling
 				elmResponded = false;
@@ -739,7 +750,19 @@ public class ObdBackgroundService extends Service
 		else if (ElmProt.PROP_STATUS.equals(prop))
 		{
 			ElmProt.STAT status = (ElmProt.STAT) evt.getNewValue();
+			ElmProt.STAT previous = sElmStatus;
 			sElmStatus = status;
+			elmStatusSinceMs = System.currentTimeMillis();
+			// While polling, the ELM flips CONNECTED / NODATA / CONNECTING (protocol
+			// search) many times per second for unsupported PIDs. Logging / notifying
+			// each flip floods the event log and the notification → keep them quiet.
+			boolean polling = POLLING_STATES.contains(status) && POLLING_STATES.contains(previous);
+			if (polling)
+			{
+				elmResponded = true;
+				sMessage = "已連線 " + (sDeviceName != null ? sDeviceName : "") + " — 讀取資料中";
+				return;
+			}
 			logEvent("ELM 狀態 → " + status);
 			elmResponded = true;
 			handler.removeCallbacks(elmInitWatchdog);
@@ -909,11 +932,71 @@ public class ObdBackgroundService extends Service
 		return result;
 	}
 
+	/** ELM states that alternate during normal data polling */
+	private static final java.util.EnumSet<ElmProt.STAT> POLLING_STATES = java.util.EnumSet.of(
+		ElmProt.STAT.CONNECTED, ElmProt.STAT.NODATA, ElmProt.STAT.CONNECTING);
+
+	/** ELM states that mean "no usable data" */
+	private static final java.util.EnumSet<ElmProt.STAT> ELM_BAD_STATES = java.util.EnumSet.of(
+		ElmProt.STAT.UNDEFINED, ElmProt.STAT.DISCONNECTED, ElmProt.STAT.NODATA,
+		ElmProt.STAT.ERROR, ElmProt.STAT.RXERROR, ElmProt.STAT.DATAERROR);
+	/** ELM must not stay in a bad state (without data) longer than this */
+	private static final long ELM_BAD_STATE_TIMEOUT = 30000;
+	/** time of the last ELM status change */
+	private long elmStatusSinceMs = 0L;
+	/** ELM was already reset because of a bad state on this connection */
+	private boolean elmBadStateResetDone = false;
+
 	private void checkHealth()
 	{
 		if (stopping || commService == null) return;
 		long now = System.currentTimeMillis();
 		CommService.STATE state = commService.getState();
+
+		// Safety net: not connected, not connecting and no retry pending → never idle
+		if (state != CommService.STATE.CONNECTED && state != CommService.STATE.CONNECTING
+			&& !connectPending)
+		{
+			BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+			boolean btUsable = CommService.medium == CommService.MEDIUM.NETWORK
+				|| (adapter != null && adapter.isEnabled());
+			if (btUsable)
+			{
+				logEvent("未連線且沒有排定重連 → 立即連線");
+				retryCount = 0;
+				scheduleConnect(1000);
+			}
+			return;
+		}
+
+		// ELM state supervision: connected, but the ELM sits in an error state
+		// without delivering data → reset the ELM once, then reconnect the link
+		ElmProt.STAT elmStatus = CommService.elm.getStatus();
+		if (state == CommService.STATE.CONNECTED
+			&& now - connectStartMs > 60000
+			&& now - sLastDataMs > ELM_BAD_STATE_TIMEOUT
+			&& ELM_BAD_STATES.contains(elmStatus)
+			&& now - elmStatusSinceMs > ELM_BAD_STATE_TIMEOUT)
+		{
+			if (!elmBadStateResetDone)
+			{
+				elmBadStateResetDone = true;
+				logEvent("ELM 停在 " + elmStatus + " 超過 30 秒且沒有資料 → 重置 ELM");
+				elmStatusSinceMs = now;
+				elmResponded = false;
+				elmResetAttempts = 0;
+				CommService.elm.reset();
+				handler.removeCallbacks(elmInitWatchdog);
+				handler.postDelayed(elmInitWatchdog, ELM_INIT_TIMEOUT);
+			}
+			else
+			{
+				logEvent("重置後 ELM 仍停在 " + elmStatus + " → 重新連線");
+				commService.stop(); // → OFFLINE → retry
+			}
+			return;
+		}
+
 		if (state == CommService.STATE.CONNECTING && now - connectStartMs > CONNECT_TIMEOUT)
 		{
 			log.warning("Connect timeout → abort and retry");
@@ -934,6 +1017,7 @@ public class ObdBackgroundService extends Service
 			&& now - connectStartMs > DATA_TIMEOUT)
 		{
 			log.warning("No OBD data for " + (now - sLastDataMs) / 1000 + "s → reconnect");
+			logEvent("超過 " + DATA_TIMEOUT / 1000 + " 秒沒有有效資料（ELM：" + elmStatus + "）→ 重新連線");
 			setMessage("長時間沒有資料，重新連線…");
 			commService.stop(); // → OFFLINE → retry
 		}

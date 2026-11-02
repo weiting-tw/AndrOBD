@@ -64,8 +64,9 @@ public class MainActivity extends Activity
 	private SharedPreferences prefs;
 	private TextView statusTitle;
 	private TextView statusDetails;
-	private TextView valuesView;
-	private TextView eventsView;
+	/** live content of an open values / events dialog (null when closed) */
+	private TextView dialogText;
+	private boolean dialogShowsEvents;
 	private Button batteryButton;
 	private final Handler handler = new Handler(Looper.getMainLooper());
 
@@ -90,8 +91,6 @@ public class MainActivity extends Activity
 
 		statusTitle = findViewById(R.id.status_title);
 		statusDetails = findViewById(R.id.status_details);
-		valuesView = findViewById(R.id.values);
-		eventsView = findViewById(R.id.events);
 		batteryButton = findViewById(R.id.btn_battery);
 
 		findViewById(R.id.btn_select_device).setOnClickListener(v -> selectDevice());
@@ -102,6 +101,8 @@ public class MainActivity extends Activity
 		findViewById(R.id.btn_settings).setOnClickListener(v ->
 			startActivity(new Intent(this, SettingsActivity.class)));
 		batteryButton.setOnClickListener(v -> requestIgnoreBatteryOptimizations());
+		findViewById(R.id.btn_values).setOnClickListener(v -> showTextDialog(false));
+		findViewById(R.id.btn_events).setOnClickListener(v -> showTextDialog(true));
 		findViewById(R.id.btn_stop).setOnClickListener(v -> {
 			ObdBackgroundService.start(this, ObdBackgroundService.ACTION_STOP);
 			Toast.makeText(this, "服務已停止，按「立即連線」可再啟動", Toast.LENGTH_LONG).show();
@@ -320,19 +321,138 @@ public class MainActivity extends Activity
 		batteryButton.setVisibility(isIgnoringBatteryOptimizations()
 			? android.view.View.GONE : android.view.View.VISIBLE);
 
+		// keep an open dialog live
+		if (dialogText != null)
+		{
+			dialogText.setText(dialogShowsEvents ? eventsText() : valuesText());
+		}
+	}
+
+	private String valuesText()
+	{
 		StringBuilder values = new StringBuilder();
 		for (Map.Entry<String, String> entry : ObdBackgroundService.displayValues().entrySet())
 		{
 			values.append(entry.getKey()).append(": ").append(entry.getValue()).append('\n');
 		}
-		valuesView.setText(values.length() > 0 ? values : "（尚無資料）");
+		return values.length() > 0 ? values.toString() : "（尚無資料）";
+	}
 
+	private String eventsText()
+	{
 		StringBuilder events = new StringBuilder();
 		for (String line : ObdBackgroundService.getEvents())
 		{
 			events.append(line).append('\n');
 		}
-		eventsView.setText(events.length() > 0 ? events : "（無）");
+		return events.length() > 0 ? events.toString() : "（無）";
+	}
+
+	/* ---------------- values / events pop-ups ---------------- */
+
+	private void showTextDialog(boolean events)
+	{
+		TextView text = new TextView(this);
+		text.setTypeface(android.graphics.Typeface.MONOSPACE);
+		text.setTextSize(12);
+		text.setTextIsSelectable(true);
+		int pad = (int) (16 * getResources().getDisplayMetrics().density);
+		text.setPadding(pad, pad / 2, pad, pad / 2);
+		text.setText(events ? eventsText() : valuesText());
+		android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+		scroll.addView(text);
+
+		android.app.AlertDialog.Builder builder = new android.app.AlertDialog.Builder(this)
+			.setTitle(events ? "事件紀錄（最新在上）" : "目前數值（自動送到 Home Assistant）")
+			.setView(scroll)
+			.setNegativeButton("關閉", null);
+		if (events)
+		{
+			builder.setPositiveButton("回報到 GitHub", (d, w) -> reportToGitHub());
+			builder.setNeutralButton("複製", (d, w) -> {
+				copyToClipboard(reportBody(Integer.MAX_VALUE));
+				Toast.makeText(this, "已複製事件紀錄", Toast.LENGTH_SHORT).show();
+			});
+		}
+		android.app.AlertDialog dialog = builder.create();
+		dialog.setOnDismissListener(d -> dialogText = null);
+		dialogText = text;
+		dialogShowsEvents = events;
+		dialog.show();
+	}
+
+	/* ---------------- report to GitHub ---------------- */
+
+	private static final String ISSUE_URL = "https://github.com/weiting-tw/AndrOBD/issues/new";
+	/** keep the URL well below browser / GitHub limits (~8 KB) */
+	private static final int MAX_ENCODED_BODY = 6000;
+
+	/**
+	 * Open a pre-filled GitHub issue (title + device / status / event log) in the
+	 * browser — one tap, uses the GitHub login of the browser. The full report is
+	 * also copied to the clipboard in case the log had to be shortened for the URL.
+	 */
+	private void reportToGitHub()
+	{
+		String full = reportBody(Integer.MAX_VALUE);
+		copyToClipboard(full);
+
+		int lines = ObdBackgroundService.getEvents().size();
+		String body = full;
+		while (Uri.encode(body).length() > MAX_ENCODED_BODY && lines > 5)
+		{
+			lines -= 5;
+			body = reportBody(lines) + "\n_（紀錄過長已截斷，完整內容已複製到剪貼簿，可貼在下方）_\n";
+		}
+		String title = "[" + getString(R.string.app_version) + "] 連線問題回報 "
+			+ DateFormat.format("MM-dd HH:mm", System.currentTimeMillis());
+		Uri uri = Uri.parse(ISSUE_URL + "?title=" + Uri.encode(title) + "&body=" + Uri.encode(body));
+		try
+		{
+			startActivity(new Intent(Intent.ACTION_VIEW, uri));
+			Toast.makeText(this, "已開啟 GitHub（完整紀錄也已複製到剪貼簿）", Toast.LENGTH_LONG).show();
+		}
+		catch (Exception e)
+		{
+			Toast.makeText(this, "找不到瀏覽器；事件紀錄已複製到剪貼簿", Toast.LENGTH_LONG).show();
+		}
+	}
+
+	/** Markdown report: app / device / status + the newest {@code maxLines} events */
+	private String reportBody(int maxLines)
+	{
+		StringBuilder sb = new StringBuilder();
+		sb.append("**App**: ").append(getString(R.string.app_version)).append('\n');
+		sb.append("**裝置**: ").append(Build.MANUFACTURER).append(' ').append(Build.MODEL)
+			.append(", Android ").append(Build.VERSION.RELEASE)
+			.append(" (SDK ").append(Build.VERSION.SDK_INT).append(")\n");
+		sb.append("**OBD**: ").append(prefs.getString(ObdBackgroundService.PREF_DEVICE_NAME, "-")).append('\n');
+		sb.append("**連線**: ").append(ObdBackgroundService.getConnectionState())
+			.append(" / ELM ").append(ObdBackgroundService.getElmStatus()).append('\n');
+		sb.append("**狀態**: ").append(ObdBackgroundService.getStatusMessage()).append('\n');
+		sb.append("**最後收到資料**: ").append(formatTime(ObdBackgroundService.getLastDataMs())).append('\n');
+		MqttPublisher mqtt = MqttPublisher.get(this);
+		sb.append("**MQTT 最後送出**: ").append(formatTime(mqtt.getLastPublishMs()));
+		if (mqtt.getLastError() != null) sb.append(" ⚠ ").append(mqtt.getLastError());
+		sb.append("\n\n### 事件紀錄（最新在上）\n```\n");
+		int n = 0;
+		for (String line : ObdBackgroundService.getEvents())
+		{
+			if (n++ >= maxLines) break;
+			sb.append(line).append('\n');
+		}
+		sb.append("```\n");
+		return sb.toString();
+	}
+
+	private void copyToClipboard(String text)
+	{
+		android.content.ClipboardManager cm =
+			(android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+		if (cm != null)
+		{
+			cm.setPrimaryClip(android.content.ClipData.newPlainText("AndrOBD log", text));
+		}
 	}
 
 	private String formatTime(long ms)
