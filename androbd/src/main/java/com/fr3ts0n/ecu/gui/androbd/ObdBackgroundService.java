@@ -130,7 +130,7 @@ public class ObdBackgroundService extends Service
 
 	/** Recent events (newest last) shown on the status screen for troubleshooting */
 	private static final java.util.LinkedList<String> sEvents = new java.util.LinkedList<>();
-	private static final int MAX_EVENTS = 40;
+	private static final int MAX_EVENTS = 100;
 
 	private static final String PREF_EVENT_LOG = "event_log";
 	/** app context to persist the event log (survives process restarts / reboots) */
