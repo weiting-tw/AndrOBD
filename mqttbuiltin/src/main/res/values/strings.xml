@@ -21,6 +21,8 @@
     <string name="mqtt_retain_sum">MQTT retain flag for all published topics</string>
     <string name="mqtt_qos">MQTT Qos</string>
     <string name="mqtt_qos_sum">MQTT Quality of service (0-2)</string>
+    <string name="mqtt_log">MQTT 日誌</string>
+    <string name="mqtt_log_sum">事件紀錄送到 &lt;prefix&gt;log，連線健康狀態送到 &lt;prefix&gt;health（retained）</string>
     <string name="data_items">Data items</string>
     <string name="data_items_sum">Select data items to be published to MQTT</string>
     <string-array name="mqtt_qos">
