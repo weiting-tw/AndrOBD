@@ -750,8 +750,19 @@ public class ObdBackgroundService extends Service
 		else if (ElmProt.PROP_STATUS.equals(prop))
 		{
 			ElmProt.STAT status = (ElmProt.STAT) evt.getNewValue();
+			ElmProt.STAT previous = sElmStatus;
 			sElmStatus = status;
 			elmStatusSinceMs = System.currentTimeMillis();
+			// While polling, the ELM flips CONNECTED / NODATA / CONNECTING (protocol
+			// search) many times per second for unsupported PIDs. Logging / notifying
+			// each flip floods the event log and the notification → keep them quiet.
+			boolean polling = POLLING_STATES.contains(status) && POLLING_STATES.contains(previous);
+			if (polling)
+			{
+				elmResponded = true;
+				sMessage = "已連線 " + (sDeviceName != null ? sDeviceName : "") + " — 讀取資料中";
+				return;
+			}
 			logEvent("ELM 狀態 → " + status);
 			elmResponded = true;
 			handler.removeCallbacks(elmInitWatchdog);
@@ -920,6 +931,10 @@ public class ObdBackgroundService extends Service
 		}
 		return result;
 	}
+
+	/** ELM states that alternate during normal data polling */
+	private static final java.util.EnumSet<ElmProt.STAT> POLLING_STATES = java.util.EnumSet.of(
+		ElmProt.STAT.CONNECTED, ElmProt.STAT.NODATA, ElmProt.STAT.CONNECTING);
 
 	/** ELM states that mean "no usable data" */
 	private static final java.util.EnumSet<ElmProt.STAT> ELM_BAD_STATES = java.util.EnumSet.of(
